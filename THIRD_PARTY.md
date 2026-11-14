@@ -18,5 +18,5 @@ domain); the state-variable filter follows Vadim Zavalishin's TPT form ("The Art
 oscillators use the polyBLEP technique (Välimäki et al.). The FM engine is STACK's own two-pair design: neither the
 closed M-VAVE engine nor msfa is used.
 
-The reference photo `reference/kawa-soundsystem.jpg` is a visual reference supplied by the project owner. It is not
-part of the firmware or the web emulator, and none of its names or logos are reproduced.
+The visual reference used while designing (a photo of a real sound system) is not part of this repository, the
+firmware or the web emulator, and none of its names or logos are reproduced.

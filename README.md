@@ -25,8 +25,8 @@ medio, tops arriba; los conos laten con cada golpe.
 
 ### Probarlo sin FM-1
 
-El emulador web ejecuta el mismo código que el FM-1. Tras la primera release estará en la web del proyecto;
-mientras, en local:
+El emulador web ejecuta el mismo código que el FM-1. Tras la primera release estará en
+<https://alwaro777.github.io/stack-fm1/emu/>; mientras, en local:
 
 ```bash
 make web && make serve      # http://localhost:8017/

@@ -1,8 +1,8 @@
 {
   "what": "An 8-track groovebox for rave, dub and acid: 36 sounds made from scratch, 16 patterns, chains and songs, p-locks, dub delay, reverb, pump. Every track you add brings a speaker cabinet to the sound system on the screen.",
-  "author": "OWNER",
+  "author": "Alwaro777",
   "kinds": "groove",
-  "play": "https://OWNER.github.io/stack/emu/",
+  "play": "https://alwaro777.github.io/stack-fm1/emu/",
   "image": "docs/img/stack.png",
   "color": "#FF6212",
   "sounds": "own"

@@ -1,8 +1,8 @@
 # STACK — Plan
 
 Groovebox open-source para el M-VAVE FM-1 cuyo elemento central es un sound system pixel-art que crece con el patrón.
-Datos de hardware y fuentes: [HARDWARE.md](HARDWARE.md). Referencia visual: `reference/kawa-soundsystem.jpg` (solo
-inspiración: ningún logo ni nombre de ese sistema aparece en el firmware).
+Datos de hardware y fuentes: [HARDWARE.md](HARDWARE.md). La referencia visual (una foto de un sound system real)
+quedó fuera del repositorio; ningún logo ni nombre de ese sistema aparece en el firmware.
 
 ## Decisión de base: app sobre fm1-base (submódulo `base/`, con felucca-bsp en `base/bsp/`)
 Cambio respecto al borrador aprobado (que proponía felucca-bsp + herramientas de Felucca + emulador propio): durante la
@@ -205,7 +205,8 @@ Medidas (host, Apple Silicon; el FM-1 sin medir todavía):
   imitación: todas las páginas y enlaces responden.
 - **The Firmware Hub**: `fmhub.json`, identidad `FM-1_58`, paquete por `zvenson/fm1-build@v1` con atestación.
 - **Checklist de hardware**: [HARDWARE-TEST.md](HARDWARE-TEST.md).
-- **Pendiente (necesita al dueño del repo o un FM-1)**: crear el repositorio en GitHub y rellenar `author`, `repo`,
-  `install`, `site` (fm1.toml), `OWNER` (words.tsv, fmhub.json); primera release (tag) → `.fwsc` atestado y web;
+- **Repositorio**: https://github.com/alwaro777/stack-fm1 (autor Alwaro777); web en https://alwaro777.github.io/stack-fm1/
+  tras la primera release.
+- **Pendiente (necesita una release o un FM-1)**: primera release (tag) → `.fwsc` atestado y web;
   pasar la checklist en un FM-1 real; medir CPU y SPI y, si hace falta, mover la ruta de audio a RAM
   (`PLAT_RAM_CODE`) o usar el segundo core; enviar al Hub.
