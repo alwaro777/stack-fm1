@@ -1,36 +1,51 @@
-# STACK F1 in fm1-base's host simulator (make sim): the flyer, the I/O view, the test tone, the controls.
-# view: 0 = flyer, 1 = I/O test
+# STACK in fm1-base's host simulator (make sim): the flyer, the sequencer playing the demo, edits, the mixer, I/O.
+# view: 0 flyer, 1 seq, 2 edit, 3 global, 4 mixer, 5 help, 6 I/O test
 wait 600
 shot boot.png
 expect view 0
-# any key leaves the flyer, without playing
-tapkey 7
+# a key leaves the flyer for the sequencer, without editing anything
+tapkey w3
 wait 50
 expect view 1
-expect voices 0
-# a key plays the test tone
-key 7 down
-wait 50
-expect voices 1
-wav tone.wav
-wait 300
+expect playing 0
+# PLAY: the demo runs; record two bars
+tap PLAY
+wait 30
+expect playing 1
+wav demo.wav
+wait 3500
 wavstop
-shot io_key.png
-key 7 up
-wait 400
-expect voices 0
-# octave, encoders, MASTER
-tap OCT+
+shot seq_playing.png
+expect pos >-1
+# track 7 (the acid): black key 7; hold its step 4 and turn K1 (note), then let go
+tapkey b6
 wait 30
-expect octave 1
-turn K2 3
-master 2048
-wait 300
-press PLAY
+expect track 6
+key w3 down
 wait 30
-shot io_controls.png
-release PLAY
-# HOME: back to the flyer
+turn K1 2
+wait 200
+shot step_held.png
+key w3 up
+wait 30
+# the mixer: a HOME tap; black key 1 mutes the kick
 tap HOME
 wait 50
-expect view 0
+expect view 4
+tapkey b0
+wait 400
+shot mixer_kick_muted.png
+# SHIFT+FX: the I/O test; HOME back
+press HOME
+wait 30
+tap FX
+wait 30
+release HOME
+wait 30
+expect view 6
+tap HOME
+wait 50
+expect view 1
+tap PLAY
+wait 50
+expect playing 0

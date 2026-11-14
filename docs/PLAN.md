@@ -98,3 +98,25 @@ Margen ≥15 %. Si no cabe: menos voces FM, reverb a media tasa, o `cpu2`.
 | R5 | Sin velocidad de teclas por defecto | velocidad por paso; `APP_TOUCH` como opción |
 | R6 | "OCT− al encender" no existe en fm1-base (su rescate es REC al encender + modo seguro) | documentar REC; valorar pedir OCT− upstream |
 | R7 | BLE + WiFi + RAM | sin BLE en F1–F4; activarlo en F5 si la RAM lo permite |
+
+## Estado por fase
+
+### F2 — secuenciador + drums + acid (hecho)
+- Reloj a 96 PPQN con duración de tick en Q16 (sin deriva; precisión ±1 muestra), render troceado en fronteras de tick.
+- Por pista: 1–64 pasos, escala 1/32–1/4 y tresillos, dirección FWD/REV/PING/RAND, polimetría. Por paso: on, nota,
+  velocidad, gate (1/16 de paso), probabilidad (dados con semilla: misma secuencia en cada PLAY), ratchet ×1–4,
+  nudge ±11/24 de paso (también hacia atrás, gracias al look-ahead de medio paso), condiciones (FILL, 1ST, A:B),
+  accent y slide. Global: BPM 20–300 con décimas, swing 50–75 %, mute/solo, FILL, grabación en vivo cuantizada,
+  copiar/pegar/limpiar pista y un nivel de deshacer.
+- Motores en punto fijo con productos de 32 bits (ver felucca-bsp docs/CPU.md): percusión modelada (808, 909, gabber,
+  caja, palmas, hats con choke, rim, tom, cowbell) y bajo acid (saw/square polyBLEP o seno, filtro de 4 polos 24/18 dB
+  con resonancia y tanh, envolvente de filtro, accent, slide). Constantes precalculadas (`tools/gen_tables.py`): sin
+  libm, mismo audio bit a bit en host, web y FM-1.
+- Pendiente de fases siguientes: p-locks (F4/F5), piano-roll (F3/F5), MIDI y reloj externo (F5), patrones y canción (F5).
+
+Medidas (host, Apple Silicon; el FM-1 sin medir todavía):
+| Caso | Host | Estimación FM-1 (360 MHz, 20–40× más lento) |
+|---|---|---|
+| Demo (6 pistas) | 0,42 % de tiempo real | ~8–17 % de un core |
+| Peor caso (8 pistas, 1/32, ratchet ×4, accent) | 1,1 % | ~22–45 % |
+| RAM propia | proyecto 4,4 KiB + voces/colas ~3 KiB + framebuffer 28 KiB + 2 bandas 15 KiB | |

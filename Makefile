@@ -5,6 +5,7 @@
 #   make serve     serve it on http://localhost:8017/
 #   make fw        the FM-1 package app/build/stack.fwsc (needs the JieLi toolchain: CI does this, see .github/)
 #   make record    re-record the golden hashes after an intended change (review the PNGs in build/test-out/)
+#   make tables    regenerate app/core/tables.h (the audio path's constants) from tools/gen_tables.py
 
 # Python >= 3.10 for fm1-base's tools and emsdk (a standalone CPython here; python3 elsewhere, e.g. CI)
 PY ?= $(shell for p in $$HOME/.local/python312/bin/python3.12 python3.12 python3; do \
@@ -16,15 +17,15 @@ EMSDK ?= $(HOME)/emsdk
 FRIBIDI = DYLD_FALLBACK_LIBRARY_PATH=$(HOME)/.local/fribidi/lib
 CC ?= cc
 CFLAGS_TEST = -std=c99 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -ffp-contract=off -fsanitize=address,undefined
-APP_SRC = app/core/core.c app/ui/fb.c app/ui/ui.c app/ui/cabinet.c
+APP_SRC = app/core/core.c app/core/drums.c app/core/acid.c app/core/presets.c app/ui/fb.c app/ui/ui.c app/ui/ui_draw.c app/ui/cabinet.c
 
-.PHONY: test unit host sim web serve fw record clean
+.PHONY: test unit host sim web serve fw record tables clean
 
 test: unit sim
 
-build/test_main: tests/unit/test_main.c tests/unit/png.h $(APP_SRC) $(wildcard app/core/*.h app/ui/*.h)
+build/test_main: tests/unit/test_main.c $(wildcard tests/unit/*.h) $(APP_SRC) $(wildcard app/core/*.h app/ui/*.h)
 	@mkdir -p build
-	$(CC) $(CFLAGS_TEST) -o $@ tests/unit/test_main.c $(APP_SRC)
+	$(CC) $(CFLAGS_TEST) -o $@ tests/unit/test_main.c $(APP_SRC) -lm
 
 unit: build/test_main
 	@mkdir -p build/test-out
@@ -50,6 +51,9 @@ serve:
 
 fw:
 	./build.sh
+
+tables:
+	$(PY) tools/gen_tables.py app/core/tables.h
 
 clean:
 	rm -rf build app/build

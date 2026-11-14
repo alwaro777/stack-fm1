@@ -11,8 +11,10 @@ Every track you add brings a speaker cabinet to the on-screen sound system: subs
 tops on top.
 
 > ⚠️ **Beta / pre-alfa — instálalo bajo tu responsabilidad. Install at your own risk.**
-> Estado: **Fase 1** (esqueleto: pantalla de arranque, prueba de controles, tono de prueba). Aún no hay secuenciador.
-> Status: **Phase 1** (skeleton: boot screen, control test, test tone). No sequencer yet.
+> Estado: **Fase 2**: secuenciador de 8 pistas, motor de percusión analógica modelada y bajo acid 303. El sound
+> system animado llega en la Fase 3 (por ahora HOME abre un mezclador).
+> Status: **Phase 2**: 8-track sequencer, modelled analogue drums and a 303-style acid bass. The animated sound
+> system arrives in Phase 3 (for now HOME opens a mixer).
 
 Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWARE.md)
 
@@ -22,8 +24,19 @@ Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWAR
 make web && make serve      # http://localhost:8017/  (Emscripten 6.0.10, Python ≥ 3.10 + Pillow)
 ```
 
-In the emulator: click **Switch on**, then use the knobs (drag or mouse wheel), the buttons and the keys. Keyboard
-shortcuts are listed under the panel. Shift-click or right-click holds a key or button down.
+In the emulator: click **Switch on**, press any key to leave the flyer, then **PLAY**: the demo pattern runs.
+Knobs: drag or mouse wheel. Shift-click or right-click holds a key or button down (to hold a step and turn knobs).
+
+| Control | Does |
+|---|---|
+| White keys | the 16 steps of the page: tap on/off; **hold + knobs** edits the step (NOTE VEL GATE PROB; ALGO → RATCHET NUDGE COND ACC/SLD) |
+| Black keys 1–8 | pick the track (in the mixer: mute; HOME+key: solo) |
+| Black keys 9 / 10 / 11 | PAGE / FILL (held) / KEYS mode (play the track chromatically; SEQ returns) |
+| PLAY · REC | play-stop · arm live recording (KEYS mode, quantised) |
+| SEQ · EDIT · ENV · GLO | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing |
+| HOME tap · HOME held | mixer · SHIFT: +SEQ copy, +EDIT paste, +REC clear, +SAVE undo, +PLAY demo, +GLO help, +FX I/O test |
+| SELECT · PRESET · K1–K4 | track · sound preset · the page's parameters |
+| OCT− / OCT+ | page (KEYS mode: octave) |
 
 ```bash
 make test                   # unit tests (core/ui) + the app in fm1-base's host simulator (PNG, WAV, checks)
