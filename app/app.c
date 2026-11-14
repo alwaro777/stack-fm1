@@ -31,7 +31,9 @@ _Static_assert(NKEYS == UI_NKEYS, "27 keys");
 /* Two band buffers (240 x 16 RGB565, 7.5 KiB each): lcd_blit leaves its DMA running, so a band is converted into one
  * buffer while the other may still be on its way to the panel; lcd_blit waits for the previous transfer before it
  * starts the next, so by the time a buffer is reused its transfer has ended. */
-static uint16_t band_buf[2][FB_W * FB_BAND] PLAT_POOL;
+static uint16_t band_buf[2][FB_W * FB_BAND] __attribute__((aligned(4)));   /* in .bss, not the pool: the pool
+                                         * keeps fm1-base's 8 KiB headroom (first device build: 1.4 KiB left with
+                                         * these in it; .bss had 39 KiB free) */
 static uint16_t pal_be[16];              /* the palette as the panel takes it: RGB565, high byte first */
 #define FLUSH_MAX_BANDS 8u               /* per frame; the rest goes next frame (the boot screen: two frames) */
 
