@@ -9,6 +9,7 @@
  *   4. the oldest voice of all
  * A mono model (a lead, the reese, FM bass) keeps one voice and retriggers or glides it. */
 #include "engine.h"
+#include "core.h"
 
 pool_t g_pool[NPOOL];
 static uint32_t pool_clock;
@@ -25,9 +26,9 @@ const uint32_t NCHORDS = sizeof CHORDS / sizeof CHORDS[0];
 static uint32_t max_poly(uint32_t engine, uint32_t model)
 {
     if (engine == ENGINE_SYNTH)
-        return model == SY_MONO || model == SY_HOOVER ? 1u : POLY_MAX;
+        return model == SY_MONO || model == SY_HOOVER ? 1u : core_shed_level >= 2 ? 2u : POLY_MAX;
     if (engine == ENGINE_FM)
-        return model == FMM_BASS ? 1u : POLY_MAX;
+        return model == FMM_BASS ? 1u : core_shed_level >= 2 ? 2u : POLY_MAX;
     return 1u;
 }
 

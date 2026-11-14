@@ -8,7 +8,7 @@ seq_playing e4592ed0
 edit_acid 1e3a07f8
 mix_mute3 5c02b7b3
 global e57f32c3
-help 52a2e48d
+help 2e9d4255
 cabinets 00516564
 stack_empty 17cdc27c
 stack_kick_falling ce999be2
@@ -62,3 +62,7 @@ song e4cfbd3e
 scale ec83a2f1
 seq_plock 58048c8c
 global_midi a6621e19
+demo0_6s 8aacdfe6
+demo1_6s 04928919
+demo2_6s facc19e2
+demo_built fddd9b40

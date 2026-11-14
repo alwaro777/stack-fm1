@@ -28,6 +28,10 @@ typedef struct {
     int req_save, unsaved;
     bank_t pclip;                /* a whole pattern copied */
     int has_pclip;
+    /* the demo, built up: its full first pattern kept aside, its tracks brought in two bars apart */
+    bank_t build_src;
+    uint8_t build_order[NTRACKS];
+    int building, build_layer, build_bars, build_last_pos, demo_next;
     int scanlines;               /* the CRT look on the sound system */
     uint32_t blink;              /* the selected cabinet's blink phase last drawn */
     int held_step, held_edited, step_page;

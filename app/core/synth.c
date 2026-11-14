@@ -10,6 +10,7 @@
  *                       swooping up from a fifth under the note), CHORD (4 voices: the track's chord on each note)
  * Fixed point, 32-bit products (dsp.h). */
 #include "engine.h"
+#include "core.h"
 
 #define SY_CTL 32u
 #define GLIDE_K 30               /* per control block, /512: ~60 ms */
@@ -43,6 +44,7 @@ void synth_render(pvoice_t *v, const track_t *t, int32_t *out, uint32_t n)
     int32_t drive = 4096 + (int32_t)t->p[PR_DRIVE] * 120;      /* Q12 */
     int32_t gain = t->model == SY_CHORD || t->model == SY_POLY ? 23000 : 27000;   /* chords leave room */
     int hoover = t->model == SY_HOOVER;
+    uint32_t nsaw = core_shed_level >= 1 ? 3u : 5u;   /* under load: three saws, not five */
     uint32_t pw = 0x80000000u;
     for (i = 0; i < n; i++) {
         int32_t x, y, a, me;
@@ -81,9 +83,9 @@ void synth_render(pvoice_t *v, const track_t *t, int32_t *out, uint32_t n)
             break;
         case OSC_SUPER:
             x = 0;
-            for (k = 0; k < 5; k++)
+            for (k = 0; k < nsaw; k++)
                 x += dsp_saw(v->ph[k], inc[k]);
-            x = (x * 13) >> 6;                                    /* five saws at ~0.2 each */
+            x = nsaw == 5u ? (x * 13) >> 6 : (x * 21) >> 6;       /* five saws at ~0.2 each (or three at ~0.33) */
             break;
         case OSC_PWM:
             x = (dsp_saw(v->ph[0], inc[0]) - dsp_saw(v->ph[0] + pw, inc[0])) >> 1;
@@ -98,9 +100,9 @@ void synth_render(pvoice_t *v, const track_t *t, int32_t *out, uint32_t n)
             x = (x + (wave == OSC_SINE ? dsp_sin(v->ph[1]) : dsp_saw(v->ph[1], inc[1]))) >> 1;
         if (hoover) {
             int32_t s = 0;
-            for (k = 0; k < 5; k++)
+            for (k = 0; k < nsaw; k++)
                 s += dsp_saw(v->ph[k], inc[k]);
-            x = ((s * 11) >> 6) + (dsp_saw(v->ph[5], inc[5]) >> 1);
+            x = ((s * (nsaw == 5u ? 11 : 18)) >> 6) + (dsp_saw(v->ph[5], inc[5]) >> 1);
         }
         y = svf_run(&v->f, x, (int)mode);
         y = dsp_tanh((clampi(y, -32767, 32767) * (drive >> 2)) >> 10);

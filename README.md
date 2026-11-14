@@ -1,79 +1,96 @@
 # STACK
 
-![STACK boot screen](docs/img/splash.png) ![The sound system](docs/img/stack.png)
+![The RAVE demo building up on the FM-1's screen](docs/img/stack-build.gif)
 
-**ES** · Firmware open-source para el **M-VAVE FM-1** que lo convierte en una groovebox de 8 pistas para rave, dub y
-acid. Cada pista que añades trae una caja de altavoz al *sound system* en pantalla: subs abajo, medios en medio, tops
-arriba.
+> ⚠️ **Beta — instálalo bajo tu responsabilidad · install at your own risk.** Probado en simulador y emulador; la
+> prueba en un FM-1 real está pendiente ([docs/HARDWARE-TEST.md](docs/HARDWARE-TEST.md)). Tested in the simulator
+> and the emulator; testing on a real FM-1 is pending.
 
-**EN** · Open-source firmware for the **M-VAVE FM-1** that turns it into an 8-track groovebox for rave, dub and acid.
-Every track you add brings a speaker cabinet to the on-screen sound system: subs at the bottom, mids in the middle,
-tops on top.
+## Español
 
-> ⚠️ **Beta / pre-alfa — instálalo bajo tu responsabilidad. Install at your own risk.**
-> Estado: **Fase 5**: 16 patrones, cadena y canción, p-locks, escalas, MIDI por USB (notas, reloj, start/stop),
-> guardado en flash y exportar/importar el proyecto. 36 sonidos, FX globales y el sound system animado.
-> Status: **Phase 5**: 16 patterns, chain and song, parameter locks, scales, USB MIDI (notes, clock, start/stop),
-> saving to flash and project export/import. 36 sounds, master effects and the animated sound system.
+**STACK** es un firmware open-source para el **M-VAVE FM-1** que lo convierte en una groovebox de 8 pistas para rave,
+dub y acid. Cada pista con pasos trae una caja de altavoz al *sound system* de la pantalla: subs abajo, medios en
+medio, tops arriba; los conos laten con cada golpe.
 
-Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWARE.md)
+- **Sonido**: 36 presets sintetizados (sin samples): percusión analógica modelada (808, 909, gabber, caja, palmas,
+  hats, rim, tom, cowbell, shaker, ride, crash), bajos (acid 303, sub, reese, FM), leads (hoover, rave stab, square,
+  pluck, acid), FM (e-piano, campana, mallet), pads con acordes y memoria de acordes, y efectos (riser, downlifter,
+  sirena dub, láser, sweep, impacto, vinilo).
+- **Secuenciador**: 1–64 pasos por pista, polimetría, escalas de tiempo y direcciones; por paso nota, velocidad,
+  gate, probabilidad, ratchet, micro-timing, condiciones, accent, slide y **p-locks**; swing, fill, mute/solo,
+  grabación en vivo cuantizada; **16 patrones**, cadenas y canción; escalas.
+- **Bus master**: delay dub ping-pong sincronizado, reverb, *pump* desde el kick, compresor y filtro DJ.
+- **MIDI por USB**: notas por canal de pista, reloj de entrada y salida, start/stop.
+- **Guardado** en la flash del FM-1 y **exportar/importar** el proyecto como fichero.
 
-## Probar sin hardware · Try it without hardware
+### Probarlo sin FM-1
+
+El emulador web ejecuta el mismo código que el FM-1. Tras la primera release estará en la web del proyecto;
+mientras, en local:
 
 ```bash
-make web && make serve      # http://localhost:8017/  (Emscripten 6.0.10, Python ≥ 3.10 + Pillow)
+make web && make serve      # http://localhost:8017/
 ```
 
-In the emulator: click **Switch on**, press any key to leave the flyer: the demo's speakers drop onto the stage.
-**PLAY** runs it; the cones push with every hit.
-Knobs: drag or mouse wheel. Shift-click or right-click holds a key or button down (to hold a step and turn knobs).
+**Switch on**, una tecla, **PLAY**. **HOME + PLAY** construye una demo pista a pista (RAVE 138, DUB 140, GABBER 180).
+Con el ratón: arrastra o usa la rueda en los knobs; mayúsculas-clic mantiene pulsada una tecla. Los botones de
+*backup* del emulador exportan e importan el proyecto; las demos están en `build/demos/` (`make demos`).
 
-| Control | Does |
+### Instalar en el FM-1
+
+1. Desde la web del proyecto (Chrome o Edge, FM-1 por USB): **Install**. O por línea de comandos:
+   `python3 base/tools/fm1_install.py stack-X.Y.fwsc`.
+2. **Si algo falla: mantén REC al encender** — modo de actualización del chip; reinstala STACK, otro firmware o el
+   oficial de M-VAVE. Dos arranques fallidos seguidos activan el modo seguro (USB activo, sin sonido).
+3. STACK nunca toca el bootloader ni el update loader (vienen intactos de felucca-bsp a través de fm1-base).
+
+Nota: el rescate "OCT− al encender" de otros firmwares no existe en fm1-base; usa REC.
+
+### Controles
+
+El [manual](app/docs/MANUAL.md) lo explica todo; en resumen:
+
+| Control | Hace |
 |---|---|
-| White keys | the 16 steps of the page: tap on/off; **hold + knobs** edits the step (NOTE VEL GATE PROB; ALGO → RATCHET NUDGE COND ACC/SLD) |
-| Black keys 1–8 | sequencer: pick the track · sound system: mute (HOME+key: solo) |
-| Black keys 9 / 10 / 11 | PAGE / FILL (held) / KEYS mode (play the track chromatically; SEQ returns) |
-| PLAY · REC | play-stop · arm live recording (KEYS mode, quantised) |
-| SEQ · EDIT · ENV · GLO · FX | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing (ALGO: scanlines) · master bus: delay, reverb, pump, comp, DJ filter |
-| LFO (KEYS mode, keys held) | store those notes as the track's chord memory (CHORD = MEMORY) |
-| LFO + a held step + knobs | parameter locks for that step (the EDIT page's params); + REC clears them |
-| ARP | patterns: white keys pick one (next bar while playing); hold ARP + keys to build a chain; K1 play mode; ALGO: the song |
-| SEL | scale and tonic for KEYS mode and the step NOTE knob |
-| SAVE | save the project (stop first); lit while something is unsaved |
-| HOME tap · HOME held | the sound system · SHIFT: +SEQ copy, +EDIT paste, +REC clear, +SAVE undo, +PLAY demo, +GLO help, +FX I/O test |
-| SELECT · PRESET · K1–K4 | track · sound preset · the page's parameters (sound system: K1 BPM, K2 swing, K3 DJ filter, K4 pump) |
-| OCT− / OCT+ | page (KEYS mode: octave) |
+| Teclas blancas | los 16 pasos de la página; mantener + knobs edita el paso; LFO + paso + knobs = p-locks |
+| Negras 1–8 | elegir pista (en el sound system: mute; HOME + tecla: solo) |
+| Negras 9 / 10 / 11 | página / FILL / modo teclado |
+| PLAY · REC · SAVE | play-stop · grabar en vivo · guardar |
+| HOME · SEQ · EDIT · ENV · FX · ARP · SEL · GLO | sound system · secuenciador · sonido · envolvente · efectos · patrones y canción · escala · global |
+| HOME mantenido | SHIFT: copiar, pegar, borrar, deshacer, demo, ayuda |
+| SELECT · ALGO · PRESET · K1–K4 | pista · página de knobs · sonido · parámetros |
 
-Export / import: the emulator's backup buttons save the project to a file and put one back; on the FM-1 the same file
-goes over USB with fm1-base's backup page or `base/tools/fm1_backup.py`.
+## English
 
-```bash
-make test                   # unit tests (core/ui) + the app in fm1-base's host simulator (PNG, WAV, checks)
-```
+**STACK** is open-source firmware for the **M-VAVE FM-1** that turns it into an 8-track groovebox for rave, dub and
+acid. Every track with steps brings a speaker cabinet to the on-screen sound system — subs at the bottom, mids in the
+middle, tops on top — and the cones push with every hit.
 
-## Seguridad del hardware · Hardware safety
+It has 36 synthesized sounds (no samples), a sequencer with per-step locks, probability, ratchets, conditions and
+nudge, 16 patterns with chains and a song mode, scales, a dub delay, reverb, kick-driven pump, compressor and DJ
+filter, USB MIDI (notes, clock, start/stop), saving to the FM-1's flash and project export/import.
 
-STACK never touches the FM-1's bootloader or the update loader: both come unmodified from
-[felucca-bsp](https://github.com/hugelton/felucca-bsp) through [fm1-base](https://github.com/charlesvestal/fm1-base).
+**Try it**: `make web && make serve`, then http://localhost:8017/ — switch on, press a key, PLAY; HOME + PLAY builds a
+demo up track by track. **Install**: the project site's installer (Chrome or Edge) or `base/tools/fm1_install.py`.
+**If anything goes wrong, hold REC while switching on** for the chip's update mode. The [manual](app/docs/MANUAL.md)
+covers every control.
 
-If something goes wrong / Si algo falla:
-1. **Hold REC while switching on**: the FM-1 enters the chip's update mode; reinstall any firmware from Chrome/Edge
-   (fm1-base, `base/device/main_fm1.c`).
-2. Two failed starts in a row put STACK in **safe mode** (USB on, no audio) so an update can still reach it.
-3. Back to the official firmware: install M-VAVE's V15 (`FM-1_015.fwsc`) the same way, or use
-   [thefirmwarehub.com/tools/rescue](https://thefirmwarehub.com/tools/rescue/).
-
-Note: the OCT− power-on rescue described for other firmwares is not part of fm1-base; use REC (see docs/PLAN.md, R6).
-
-## Build
+## Development · Desarrollo
 
 | Command | What |
 |---|---|
-| `make test` | unit tests + host simulator |
-| `make web` / `make serve` | browser emulator |
-| `./build.sh` | FM-1 package `app/build/stack.fwsc` (JieLi toolchain + AC79 SDK; CI does it: `.github/workflows/release.yml`) |
+| `make test` | unit tests (sequencer timing, DSP, serialization, UI snapshots, audio goldens) + the app in fm1-base's host simulator (save/reboot, backup/restore, MIDI) |
+| `make web` · `make serve` | the browser emulator (Emscripten 6.0.10) |
+| `make demos` · `make gif` | the demo projects as backup files · the README's GIF, both made by the firmware in the simulator |
+| `./build.sh` | the FM-1 package (JieLi toolchain + AC79 SDK: CI does it, `.github/workflows/release.yml` on `zvenson/fm1-build@v1`, attested for The Firmware Hub) |
 
-## Licencia · Licence
+Layout: `app/core` (sequencer, engines, mixer, effects, project format — portable C, fixed point, no malloc, no libm),
+`app/ui` (4-bit framebuffer, views, the sound system), `app/app.c` (the glue to fm1-base's `plat.h`), `base/`
+(fm1-base, with felucca-bsp), `tests/`, `tools/`. Design and hardware notes: [docs/PLAN.md](docs/PLAN.md),
+[docs/HARDWARE.md](docs/HARDWARE.md).
 
-GPL-3.0-or-later ([LICENSE](LICENSE)). Built on fm1-base and felucca-bsp (MPL-2.0): see [THIRD_PARTY.md](THIRD_PARTY.md).
-Not affiliated with M-VAVE. No real sound-system names or logos are used.
+## Licence · Licencia
+
+GPL-3.0-or-later ([LICENSE](LICENSE)). Built on fm1-base and felucca-bsp (MPL-2.0), from Felucca by Leo Kuroshita,
+Hügelton Instruments; see [THIRD_PARTY.md](THIRD_PARTY.md). Not affiliated with M-VAVE; no real sound system's name or
+logo is used.

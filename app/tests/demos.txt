@@ -1,0 +1,45 @@
+# The demo projects as backup files (make demos): each demo built up with SHIFT+PLAY (they come in turn), left to finish,
+# stopped, saved, and backed up. The files load in the emulator ("put a backup back") and on an FM-1 over USB.
+wait 600
+tapkey w15
+wait 50
+# RAVE 138
+press HOME
+wait 30
+tap PLAY
+wait 30
+release HOME
+wait 30000
+expect playing 1
+tap PLAY
+wait 50
+tap SAVE
+wait 300
+backup out:stack-demo-rave138.stk
+shot demo-rave138.png
+# DUB 140
+press HOME
+wait 30
+tap PLAY
+wait 30
+release HOME
+wait 32000
+tap PLAY
+wait 50
+tap SAVE
+wait 300
+backup out:stack-demo-dub140.stk
+shot demo-dub140.png
+# GABBER 180
+press HOME
+wait 30
+tap PLAY
+wait 30
+release HOME
+wait 26000
+tap PLAY
+wait 50
+tap SAVE
+wait 300
+backup out:stack-demo-gabber180.stk
+shot demo-gabber180.png

@@ -14,6 +14,7 @@
 #include "core/presets.c"
 #include "core/pattern.c"
 #include "core/project.c"
+#include "core/demo.c"
 #include "ui/fb.c"
 #include "ui/cabinet.c"
 #include "ui/ui.c"
@@ -209,6 +210,11 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
     core_render(lr, n, master_q12);
     while (core_midi_pop(&pkt))           /* and out: the tracks' notes, the clock */
         plat_midi_send(pkt, TO_USB);
+}
+
+void app_overload(void)
+{
+    core_overload();
 }
 
 void app_panic(void)

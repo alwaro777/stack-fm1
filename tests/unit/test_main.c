@@ -1288,6 +1288,102 @@ static void test_ui_phase5(void)
     snapshot("global_midi");
 }
 
+/* the CPU guard: overloads raise it (fewer saws, fewer voices, the reverb paused), calm time lowers it */
+static void test_guard(void)
+{
+    uint32_t h0, h1;
+    static int32_t a[2 * 4096];
+    fresh(1200);
+    set_preset(5, "RAVE STAB");
+    core_post(EV_NOTE_ON, 5, 57, 110);
+    run(4096, a);
+    h0 = hash32(a, 2 * 4096);
+    fresh(1200);
+    set_preset(5, "RAVE STAB");
+    core_overload();
+    CHECK(core_shed_level == 1, "one overload: level 1");
+    core_post(EV_NOTE_ON, 5, 57, 110);
+    run(4096, a);
+    h1 = hash32(a, 2 * 4096);
+    CHECK(h0 != h1, "level 1 changes the supersaw (3 saws)");
+    core_overload();
+    core_post(EV_NOTE_ON, 5, 62, 110);           /* a second MIN7: the track keeps 2 voices at level 2 */
+    run(256, 0);
+    CHECK(pool_active(5) <= 2 + 4, "level 2: new chords take two voices (%u held)", pool_active(5));
+    {
+        uint32_t i, n62 = 0;
+        for (i = 0; i < NPOOL; i++)
+            n62 += g_pool[i].used && g_pool[i].track == 5 && g_pool[i].key == 62;
+        CHECK(n62 == 2, "level 2: the new chord got 2 voices: %u", n62);
+    }
+    core_overload();
+    core_overload();
+    CHECK(core_shed_level == 3, "never past level 3");
+    run(44100 * 8 + 4410, 0);
+    CHECK(core_shed_level == 2, "8 s calm: one level down (%u)", core_shed_level);
+    run(44100 * 17, 0);
+    CHECK(core_shed_level == 0, "and back to normal (%u)", core_shed_level);
+}
+
+/* the demos: each one plays, loud and unclipped; built up, the stage grows a cabinet every two bars */
+static uint32_t boxes_on_stage(void)
+{
+    uint32_t t, n = 0;
+    int32_t x, y;
+    int kind, exc, state;
+    for (t = 0; t < NTRACKS; t++)
+        n += stack_box(t, &x, &y, &kind, &exc, &state) && state != 3;
+    return n;
+}
+
+static void test_demos(void)
+{
+    uint32_t d, f;
+    for (d = 0; d < NDEMOS; d++) {
+        int32_t pk = 0;
+        char name[32];
+        core_init();
+        core_load_demo_n(d);
+        core_post(EV_PLAY, 0, 0, 0);
+        run(44100 * 6, long_buf);
+        for (f = 0; f < 44100 * 6; f++)
+            pk = long_buf[2 * f] > pk ? long_buf[2 * f] : -long_buf[2 * f] > pk ? -long_buf[2 * f] : pk;
+        printf("demo %s: peak %.1f dBFS\n", DEMO_NAME[d], 20 * __builtin_log10(pk / 8388608.0));
+        CHECK(pk > 2970000 && pk < 8388608, "%s loud (over -9 dBFS) and unclipped", DEMO_NAME[d]);
+        snprintf(name, sizeof name, "demo%u_6s", d);
+        golden(name, hash32(long_buf, 2 * 44100 * 6));
+        wav_write(name, long_buf, 44100 * 6);
+    }
+    /* SHIFT+PLAY: RAVE built up */
+    memset(&in, 0, sizeof in);
+    in.master = 4096;
+    core_init();
+    stack_reset();
+    ui_init();
+    frame();
+    key_tap(UI_WHITE[0]);
+    in.buttons = 1u << UB_HOME;
+    frame();
+    btn_tap(UB_PLAY);
+    in.buttons = 0;
+    frame();
+    frames(60);
+    CHECK(core_playing() && boxes_on_stage() == 1, "the build starts with one cabinet: %u", boxes_on_stage());
+    {
+        uint32_t bar_ms = 4u * 60000u * 10u / g_proj.bpm10, i, seen[NTRACKS + 1] = {0}, last = 0;
+        for (i = 0; i < 2u * 8u * bar_ms / 10u + 400u; i++) {   /* 16 bars of frames */
+            frame();
+            if (boxes_on_stage() != last && boxes_on_stage() <= NTRACKS)
+                seen[last = boxes_on_stage()] = now_ms;
+        }
+        printf("demo build: cabinets at %u, %u, %u, %u ... %u ms\n", seen[1], seen[2], seen[3], seen[4], seen[7]);
+        CHECK(boxes_on_stage() == 7, "the whole RAVE on stage at the end: %u", boxes_on_stage());
+        CHECK(seen[3] > seen[2] && seen[3] - seen[2] >= bar_ms * 2 - 60 && seen[3] - seen[2] <= bar_ms * 2 + 60,
+              "a cabinet every two bars (%u ms apart, a bar is %u)", seen[3] - seen[2], bar_ms);
+    }
+    snapshot("demo_built");
+}
+
 static void test_cabinets(void)
 {
     int k;
@@ -1337,6 +1433,8 @@ int main(int argc, char **argv)
     test_midi();
     test_scale();
     test_ui_phase5();
+    test_guard();
+    test_demos();
     test_cabinets();
     golden_save();
     printf("%d checks, %d failed\n", checks, fails);

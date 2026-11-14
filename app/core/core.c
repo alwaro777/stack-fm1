@@ -20,6 +20,8 @@ project_t g_proj;
 volatile uint32_t core_mute, core_solo;
 volatile uint8_t core_fill, core_rec;
 volatile uint8_t core_fx_bypass;
+volatile uint8_t core_shed_level;
+static uint32_t shed_at;         /* abs_samples at the last overload */
 
 /* ------------------------------------------------------------- queues --- */
 static struct {
@@ -691,6 +693,13 @@ void core_midi_in(uint32_t status, uint32_t d1, uint32_t d2)
     }
 }
 
+void core_overload(void)
+{
+    if (core_shed_level < 3)
+        core_shed_level++;
+    shed_at = abs_samples;
+}
+
 uint32_t core_ext_bpm10(void)                      /* the followed clock's tempo, 0 when not following one */
 {
     if (!g_proj.clk_in || !ext_seen || ext_spt < 256)
@@ -808,6 +817,10 @@ void core_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         }
         render_chunk(&lr[2u * done], chunk, target);
         abs_samples += chunk;
+        if (core_shed_level && abs_samples - shed_at > 8u * STK_SR) {   /* 8 s calm: one level back */
+            core_shed_level--;
+            shed_at = abs_samples;
+        }
         if (playing) {
             tick_rem -= (int32_t)chunk << 16;
             sample_now += chunk;
@@ -900,83 +913,6 @@ void core_clear_project(void)
         g_proj.fx[ti] = FX_DEFAULT[ti];
 }
 
-static void on(uint32_t ti, uint32_t s, uint32_t note, uint32_t vel, uint32_t flags)
-{
-    step_t *st = &g_proj.pat.trk[ti].step[s];
-    st->flags = (uint8_t)(STEP_ON | flags);
-    st->note = (uint8_t)note;
-    st->vel = (uint8_t)vel;
-}
-
-void core_load_demo(void)
-{
-    /* an A-minor acid line (0 = rest), with accents and slides */
-    static const uint8_t ACID[16] = {45, 45, 0, 57, 48, 45, 55, 57, 45, 0, 60, 52, 45, 57, 43, 47};
-    static const uint8_t ACID_F[16] = {0, STEP_ACCENT, 0, 0, STEP_SLIDE, STEP_SLIDE, 0, STEP_ACCENT,
-                                       0, 0, 0, STEP_ACCENT, STEP_SLIDE, 0, 0, STEP_ACCENT};
-    uint32_t i;
-    core_clear_project();
-    g_proj.swing = 54;
-    for (i = 0; i < 16; i += 4)
-        on(0, i, 60, 120, 0);                     /* kick: four to the floor */
-    on(0, 14, 60, 100, 0);                        /* and a roll into the bar's end, on FILL only */
-    g_proj.pat.trk[0].step[14].ratchet = 2;
-    g_proj.pat.trk[0].step[14].cond = COND_FILL;
-    on(1, 4, 60, 110, 0);                         /* clap on 2 and 4 */
-    on(1, 12, 60, 115, 0);
-    for (i = 0; i < 16; i++)                      /* closed hats on the 16ths but the off-beats */
-        if ((i & 3u) != 2u)
-            on(2, i, 60, (i & 1u) ? 64 : 96, 0);
-    for (i = 2; i < 16; i += 4)                   /* open hats on the off-beats, choked by the next closed one */
-        on(3, i, 60, 100, 0);
-    on(4, 7, 60, 90, 0);                          /* rim, the last one on probability */
-    on(4, 13, 60, 80, 0);
-    on(4, 15, 60, 70, 0);
-    g_proj.pat.trk[4].step[15].prob = 50;
-    for (i = 0; i < 16; i++)
-        if (ACID[i])
-            on(6, i, ACID[i], ACID_F[i] & STEP_ACCENT ? 120 : 96, ACID_F[i]);
-    /* Phase 4: a minor-seventh rave stab on track 6 into the dub delay, the clap into the reverb, the rim into the
-     * delay, and a little pump from the kick */
-    preset_apply(&g_proj.pat.trk[5], (uint32_t)preset_find("RAVE STAB"));
-    on(5, 0, 57, 110, 0);
-    on(5, 10, 57, 96, 0);
-    g_proj.pat.trk[5].step[10].cond = COND_1_2;
-    g_proj.pat.trk[5].p[PR_SEND_D] = 70;
-    g_proj.pat.trk[1].p[PR_SEND_R] = 50;
-    g_proj.pat.trk[4].p[PR_SEND_D] = 80;
-    g_proj.fx[FX_PUMP] = 50;
-    /* pattern 2, the breakdown: no kick, the stab on every bar and the acid an octave up with a p-locked filter
-     * climbing; then the chain P1 P1 P1 P2 (play mode CHAIN to hear it) */
-    {
-        bank_t *b = &g_bank[1];
-        uint32_t k;
-        for (k = 0; k < 16; k++) {
-            b->step[2][k] = g_proj.pat.trk[2].step[k];
-            b->step[6][k] = g_proj.pat.trk[6].step[k];
-            if (b->step[6][k].flags & STEP_ON)
-                b->step[6][k].note = (uint8_t)(b->step[6][k].note + 12);
-        }
-        b->step[1][12] = g_proj.pat.trk[1].step[12];
-        b->step[5][0] = g_proj.pat.trk[5].step[0];
-        b->step[5][8] = g_proj.pat.trk[5].step[0];
-        for (k = 0; k < 4; k++) {
-            b->lock[k].trk = 6;
-            b->lock[k].step = (uint8_t)(k * 4u);
-            b->lock[k].param = PR_CUTOFF;
-            b->lock[k].value = (uint8_t)(40 + k * 18);
-        }
-    }
-    g_proj.chain[0] = g_proj.chain[1] = g_proj.chain[2] = 0;
-    g_proj.chain[3] = 1;
-    g_proj.chain_len = 4;
-    g_proj.song[0].pat = 0;
-    g_proj.song[0].reps = 3;
-    g_proj.song[1].pat = 1;
-    g_proj.song[1].reps = 1;
-    g_proj.song_len = 2;
-}
-
 void core_init(void)
 {
     uint32_t i;
@@ -995,6 +931,7 @@ void core_init(void)
     trigq.head = trigq.tail = 0;
     core_mute = core_solo = 0;
     core_fill = core_rec = 0;
+    core_shed_level = 0;
     playing = 0;
     gain_q15 = 0;
     peak_q15 = 0;

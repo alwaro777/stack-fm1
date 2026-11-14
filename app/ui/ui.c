@@ -330,6 +330,64 @@ static void select_track(int t)
     ui.dirty = 1;
 }
 
+/* ---------------------------------------------------- the demo, built up --- */
+static int build_add_layer(void)                  /* the next track with steps in; 0 when none is left */
+{
+    while (ui.build_layer < NTRACKS) {
+        uint32_t t = ui.build_order[ui.build_layer++], i;
+        for (i = 0; i < NSTEPS; i++)
+            if (ui.build_src.step[t][i].flags & STEP_ON) {
+                pattern_track_in(t, &ui.build_src);
+                return 1;
+            }
+    }
+    return 0;
+}
+
+static void build_start(void)
+{
+    uint32_t d = (uint32_t)ui.demo_next;
+    bank_t empty;
+    ui.demo_next = (int)((d + 1u) % NDEMOS);
+    core_post(EV_STOP, 0, 0, 0);
+    core_load_demo_n(d);
+    pattern_copy_out(&ui.build_src);              /* the whole thing aside... */
+    bank_clear(&empty);
+    pattern_copy_in(&empty);                      /* ...an empty stage... */
+    stack_reset();
+    demo_order(d, ui.build_order);
+    ui.building = 1;
+    ui.build_layer = 0;
+    ui.build_bars = 0;
+    ui.build_last_pos = -1;
+    build_add_layer();                            /* ...and the first track in */
+    core_post(EV_PLAY, 0, 0, 0);
+    ui.view = VIEW_STACK;
+    say(DEMO_NAME[d], "BUILDS UP");
+}
+
+static void build_frame(void)                     /* a track more every two bars */
+{
+    int p;
+    if (!ui.building)
+        return;
+    if (!core_playing()) {
+        if (ui.build_last_pos >= 0)               /* (stopped once it had started: the build ends) */
+            ui.building = 0;
+        return;
+    }
+    p = core_play_pos(0);
+    if (p >= 0 && p < ui.build_last_pos && ++ui.build_bars >= 2) {
+        ui.build_bars = 0;
+        if (!build_add_layer()) {
+            ui.building = 0;
+            say("DEMO", "COMPLETE");
+        }
+    }
+    if (p >= 0)
+        ui.build_last_pos = p;
+}
+
 static void shift_action(uint32_t b)             /* SHIFT (HOME held) + a button */
 {
     char t[4] = "T";
@@ -390,10 +448,8 @@ static void shift_action(uint32_t b)             /* SHIFT (HOME held) + a button
     case UB_FX:
         ui.view = VIEW_IO;
         break;
-    case UB_PLAY:
-        core_post(EV_STOP, 0, 0, 0);
-        core_load_demo();
-        say("DEMO", "LOADED");
+    case UB_PLAY:                                 /* the next demo, built up track by track */
+        build_start();
         break;
     }
     ui.shift_used = 1;
@@ -407,6 +463,7 @@ static void button(uint32_t b)                   /* a press, SHIFT not held */
     switch (b) {
     case UB_PLAY:
         core_post(core_playing() ? EV_STOP : EV_PLAY, 0, 0, 0);
+        ui.building = 0;
         break;
     case UB_REC:
         if (ui.held_step >= 0 && ((ui.prev.buttons >> UB_LFO) & 1u)) {   /* LFO + a step + REC: its locks go */
@@ -831,6 +888,7 @@ int ui_frame(const ui_input_t *in, uint32_t now)
             ui.dirty = 1;
         }
     }
+    build_frame();
     if (stack_update(now) && ui.view == VIEW_STACK)   /* (kept up to date in every view: no stale cabinets) */
         ui.dirty = 1;
     if (ui.view == VIEW_STACK && now / 300u != ui.blink) {   /* the selected cabinet blinks */

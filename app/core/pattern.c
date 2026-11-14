@@ -103,6 +103,11 @@ void pattern_copy_out(bank_t *b)                   /* the working pattern into b
         store_track(t, b);
 }
 
+void pattern_track_in(uint32_t t, const bank_t *b)  /* one track of b into the working pattern */
+{
+    load_track(t & 7u, b);
+}
+
 void pattern_copy_in(const bank_t *b)              /* b into the working pattern (a paste) */
 {
     uint32_t t;

@@ -31,11 +31,19 @@ typedef struct {
 extern volatile uint32_t core_mute, core_solo;   /* bit t = track t */
 extern volatile uint8_t core_fill;               /* FILL held */
 extern volatile uint8_t core_rec;                /* live recording armed: notes played while running are written */
-extern volatile uint8_t core_fx_bypass;          /* tests: the master bus skipped (to prove neutral is transparent) */
+extern volatile uint8_t core_fx_bypass;
+/* the CPU guard: the platform calls core_overload when a render took over 90 % of its time; each call raises the
+ * level (1: supersaws on 3 saws, 2: at most 2 voices a track, 3: the reverb paused); 8 s without one lowers it */
+extern volatile uint8_t core_shed_level;
+void core_overload(void);          /* tests: the master bus skipped (to prove neutral is transparent) */
 
 void core_init(void);            /* the default project: the demo pattern, stopped */
 void core_clear_project(void);   /* an empty pattern on the default kit */
-void core_load_demo(void);       /* a 138 BPM rave pattern on tracks 1-5 and 7 */
+void core_load_demo(void);       /* the RAVE 138 demo (two patterns, a chain, a song) */
+#define NDEMOS 3
+extern const char *const DEMO_NAME[NDEMOS];
+void core_load_demo_n(uint32_t d);   /* 0 RAVE 138, 1 DUB 140, 2 GABBER 180 */
+uint32_t demo_order(uint32_t d, uint8_t order[NTRACKS]);   /* the order its tracks come in, building it up */
 
 /* main loop side: queue an event; 0 if the ring is full (dropped, never blocks) */
 int core_post(uint32_t type, uint32_t track, uint32_t note, uint32_t vel);
@@ -62,6 +70,7 @@ void pattern_store_all(void);
 void pattern_load_current(void);
 void pattern_copy_out(bank_t *b);
 void pattern_copy_in(const bank_t *b);
+void pattern_track_in(uint32_t t, const bank_t *b);
 
 /* the project in bytes (project.c): one store object each; decode returns 0, or -1 for a bad or foreign object */
 #define PROJ_IO_MAX 3840u

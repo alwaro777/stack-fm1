@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# STACK's everyday checks: unit tests and the host simulator on every push, and the browser emulator built and (from
-# main) published to GitHub Pages. The firmware package itself is built and attested by release.yml (fm1-build@v1).
+# STACK's everyday checks: unit tests and the host simulator on every push, and the browser emulator built. The
+# firmware package is built and attested, and the site (emulator, installer, manual, demos) published, by
+# release.yml on a version tag.
 name: CI
 
 on:
@@ -56,20 +57,7 @@ jobs:
           "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.10
       - name: Build the browser emulator
         run: make web PY=python EMSDK="$RUNNER_TEMP/emsdk"
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
+          name: emulator
           path: app/build/emu
-
-  pages:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [test, web]
-    runs-on: ubuntu-24.04
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4

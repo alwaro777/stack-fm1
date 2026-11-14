@@ -9,6 +9,8 @@
 #define APP_SPLASH_RGB RGB(255, 98, 18)
 #define APP_BLOCK 256u                   /* frames per audio block: 5.8 ms at 44.1 kHz */
 #define APP_SPLASH                       /* our flyer instead of the platform's name screen */
+#define APP_OVERLOAD                     /* a render over 90 % of its time: the core sheds load (core.h) */
+void app_overload(void);
 void app_splash(void);
 
 /* the store: the project as objects (core/project.c: the settings, the kit, the 16 patterns) and the platform's

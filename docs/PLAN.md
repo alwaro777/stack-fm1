@@ -190,3 +190,22 @@ Medidas (host, Apple Silicon; el FM-1 sin medir todavía):
 - **RAM (estimada)**: pool ≈ 269 KiB de 336 (banco 74, delay 96, reverb 24, pantalla 71, E/S 4); .bss ≈ 30 KiB.
   El delay bajó a 0,557 s máx. para dejar sitio al banco.
 - Pendiente para F6: demo "paso a paso" del emulador, medir en hardware, release.
+
+### F6 — preparación para hardware, release y demo pública (hecho lo que no necesita hardware)
+- **Auditoría 32 bits**: todo el código compilado para ARMv6-M (Cortex-M0, sin FPU ni división): ninguna operación de
+  64 bits ni de coma flotante, ni explícita ni generada por el compilador; solo divisiones de 32 bits y copias.
+  Tamaños en 32 bits: código ~125 KB; RAM ~283 KB (≈252 KB al pool grande, ≈28 KB al .bss).
+- **Guardián de CPU** (`APP_OVERLOAD` de fm1-base): cada render por encima del 90 % sube un nivel (1: supersaw de 3
+  sierras, 2: 2 voces por pista, 3: reverb en pausa); 8 s sin sobrecarga bajan uno. Se ve en GLOBAL.
+- **Demos**: RAVE 138, DUB 140, GABBER 180; **HOME + PLAY** construye la siguiente pista a pista (una caja cada dos
+  compases). Ficheros de backup de cada una (`make demos`, hechos por el propio firmware en el simulador) y GIF del
+  README (`make gif`).
+- **Web pública** (`release.yml`, job `site`, al etiquetar una versión): portada, emulador, instalador web con el
+  paquete atestado, manual (`app/docs/MANUAL.md`), página de backup y las demos. Comprobada en local con un paquete de
+  imitación: todas las páginas y enlaces responden.
+- **The Firmware Hub**: `fmhub.json`, identidad `FM-1_58`, paquete por `zvenson/fm1-build@v1` con atestación.
+- **Checklist de hardware**: [HARDWARE-TEST.md](HARDWARE-TEST.md).
+- **Pendiente (necesita al dueño del repo o un FM-1)**: crear el repositorio en GitHub y rellenar `author`, `repo`,
+  `install`, `site` (fm1.toml), `OWNER` (words.tsv, fmhub.json); primera release (tag) → `.fwsc` atestado y web;
+  pasar la checklist en un FM-1 real; medir CPU y SPI y, si hace falta, mover la ruta de audio a RAM
+  (`PLAT_RAM_CODE`) o usar el segundo core; enviar al Hub.

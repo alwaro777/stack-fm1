@@ -387,6 +387,11 @@ static void draw_global(void)
     ui_cat(a, "%  XRUNS ", sizeof a);
     ui_int(a, (int32_t)ui.xruns, sizeof a);
     fb_text(4, 120, a, P_LGRAY, 1);
+    if (core_shed_level) {                         /* the CPU guard at work */
+        static const char *const G[4] = {"", "GUARD 1: 3-SAW SUPERSAWS", "GUARD 2: 2 VOICES A TRACK",
+                                         "GUARD 3: REVERB PAUSED"};
+        fb_text(4, 132, G[core_shed_level & 3u], P_RED, 1);
+    }
     footer("ALGO: PAGE 2   SHIFT+GLO: HELP");
 }
 
@@ -590,7 +595,7 @@ static void draw_help(void)
         "PRESET SOUND  LFO+STEP+KNOB: LOCK",
         "HOME HELD = SHIFT, THEN:",
         "SEQ COPY  EDIT PASTE  REC CLEAR",
-        "SAVE UNDO  PLAY DEMO  FX I/O TEST",
+        "SAVE UNDO  PLAY DEMO BUILD  FX I/O",
         "KEY 1-8 MUTE (STACK: SOLO)",
     };
     uint32_t i;

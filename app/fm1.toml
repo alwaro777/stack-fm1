@@ -7,6 +7,8 @@ usb_product = "STACK FM-1"
 ble = false
 backup = true                  # the project's objects backed up and restored over USB (web/backup, fm1_backup.py)
 emu = ["backup", "midi"]       # the emulator: Save backup / Load backup (export, import) and Web MIDI
+backup_ext = "stk"             # a backup file: stack-backup-YYYY-MM-DD.stk
+backup_holds = "the whole project: the 16 patterns, the sounds, the song and the settings"
 # the site and firmware.json for the Firmware Hub (docs/FIRMWARE-JSON.md in fm1-base)
 tagline = "a rave groovebox whose sound system grows as you build the track"
 licence = "GPL-3.0-or-later"

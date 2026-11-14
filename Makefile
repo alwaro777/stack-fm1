@@ -4,6 +4,7 @@
 #   make web       the browser emulator into app/build/emu/ (Emscripten)
 #   make serve     serve it on http://localhost:8017/
 #   make fw        the FM-1 package app/build/stack.fwsc (needs the JieLi toolchain: CI does this, see .github/)
+#   make demos     the demo projects as backup files (build/demos/*.stk), made by the firmware in the simulator
 #   make record    re-record the golden hashes after an intended change (review the PNGs in build/test-out/)
 #   make tables    regenerate app/core/tables.h (the audio path's constants) from tools/gen_tables.py
 
@@ -17,9 +18,9 @@ EMSDK ?= $(HOME)/emsdk
 FRIBIDI = DYLD_FALLBACK_LIBRARY_PATH=$(HOME)/.local/fribidi/lib
 CC ?= cc
 CFLAGS_TEST = -std=c99 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -ffp-contract=off -fsanitize=address,undefined
-APP_SRC = app/core/core.c app/core/pattern.c app/core/drums.c app/core/acid.c app/core/synth.c app/core/fm.c app/core/fxsyn.c app/core/voices.c app/core/fx.c app/core/presets.c app/core/project.c app/ui/fb.c app/ui/ui.c app/ui/ui_draw.c app/ui/cabinet.c app/ui/stack.c
+APP_SRC = app/core/core.c app/core/pattern.c app/core/drums.c app/core/acid.c app/core/synth.c app/core/fm.c app/core/fxsyn.c app/core/voices.c app/core/fx.c app/core/presets.c app/core/project.c app/core/demo.c app/ui/fb.c app/ui/ui.c app/ui/ui_draw.c app/ui/cabinet.c app/ui/stack.c
 
-.PHONY: test unit host sim web serve fw record tables clean
+.PHONY: test unit host sim web serve fw record tables demos gif clean
 
 test: unit sim
 
@@ -51,6 +52,16 @@ serve:
 
 fw:
 	./build.sh
+
+demos: host
+	@mkdir -p build/demos
+	./app/build/host/stack_host app/tests/demos.txt build/demos
+	@ls -la build/demos/*.stk
+
+gif: host
+	@rm -rf build/gif && mkdir -p build/gif/gif
+	./app/build/host/stack_host app/tests/gif.txt build/gif >/dev/null
+	$(PY) tools/make_gif.py build/gif/gif docs/img/stack-build.gif
 
 tables:
 	$(PY) tools/gen_tables.py app/core/tables.h

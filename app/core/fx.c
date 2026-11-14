@@ -159,8 +159,8 @@ void fx_bus(int32_t *l, int32_t *r, const int32_t *sd, const int32_t *sr, uint32
             r[i] += (or_ * lvl) >> 15;
         }
     }
-    /* reverb */
-    if (any_rev || fx[FX_REV_LEVEL]) {
+    /* reverb (paused at the guard's last level) */
+    if ((any_rev || fx[FX_REV_LEVEL]) && core_shed_level < 3) {
         int32_t fb = 22938 + (int32_t)fx[FX_REV_SIZE] * 72;  /* 0.70 .. 0.98 */
         int32_t damp = 32767 - (int32_t)fx[FX_REV_DAMP] * 200;
         int32_t lvl = (int32_t)fx[FX_REV_LEVEL] * 258;
