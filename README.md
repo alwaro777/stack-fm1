@@ -11,10 +11,10 @@ Every track you add brings a speaker cabinet to the on-screen sound system: subs
 tops on top.
 
 > ⚠️ **Beta / pre-alfa — instálalo bajo tu responsabilidad. Install at your own risk.**
-> Estado: **Fase 3**: secuenciador de 8 pistas, percusión analógica modelada, bajo acid 303 y el sound system animado
-> que se construye con el patrón.
-> Status: **Phase 3**: 8-track sequencer, modelled analogue drums, a 303-style acid bass and the animated sound system
-> that builds itself from the pattern.
+> Estado: **Fase 4**: secuenciador de 8 pistas, 36 sonidos de fábrica (percusión, bajos, leads, FM, pads con
+> acordes, efectos), delay dub, reverb, pump, compresor, filtro DJ y el sound system animado.
+> Status: **Phase 4**: 8-track sequencer, 36 factory sounds (drums, basses, leads, FM keys, chord pads, FX), dub delay,
+> reverb, pump, compressor, DJ filter and the animated sound system.
 
 Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWARE.md)
 
@@ -34,9 +34,10 @@ Knobs: drag or mouse wheel. Shift-click or right-click holds a key or button dow
 | Black keys 1–8 | sequencer: pick the track · sound system: mute (HOME+key: solo) |
 | Black keys 9 / 10 / 11 | PAGE / FILL (held) / KEYS mode (play the track chromatically; SEQ returns) |
 | PLAY · REC | play-stop · arm live recording (KEYS mode, quantised) |
-| SEQ · EDIT · ENV · GLO | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing (ALGO: scanlines) |
+| SEQ · EDIT · ENV · GLO · FX | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing (ALGO: scanlines) · master bus: delay, reverb, pump, comp, DJ filter |
+| LFO (KEYS mode, keys held) | store those notes as the track's chord memory (CHORD = MEMORY) |
 | HOME tap · HOME held | the sound system · SHIFT: +SEQ copy, +EDIT paste, +REC clear, +SAVE undo, +PLAY demo, +GLO help, +FX I/O test |
-| SELECT · PRESET · K1–K4 | track · sound preset · the page's parameters |
+| SELECT · PRESET · K1–K4 | track · sound preset · the page's parameters (sound system: K1 BPM, K2 swing, K3 DJ filter, K4 pump) |
 | OCT− / OCT+ | page (KEYS mode: octave) |
 
 ```bash

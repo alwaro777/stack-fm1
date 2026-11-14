@@ -290,15 +290,18 @@ static void test_presets(void)
     uint32_t p, f;
     for (p = 0; p < NPRESETS; p++) {
         int32_t peak = 0;
-        uint32_t last = 0, frames = 44100 * 2;
+        uint32_t last = 0, frames = PRESETS[p].engine == ENGINE_FX || PRESETS[p].group == PG_PAD ? 44100 * 4 : 44100 * 2;
         char name[40];
+        uint32_t note = PRESETS[p].engine == ENGINE_ACID || PRESETS[p].group == PG_BASS ? 45 : 60;
+        uint32_t hold = PRESETS[p].engine == ENGINE_FX || PRESETS[p].group == PG_PAD ? 44100 : 44100 / 4;   /* gestures, pads: longer */
         fresh(1200);
+        g_proj.fx[FX_DLY_LEVEL] = g_proj.fx[FX_REV_LEVEL] = 0;   /* the dry sound: no echoes measured */
         preset_apply(&g_proj.pat.trk[0], p);
         run(4096, 0);                          /* MASTER's glide up from silence, first */
-        core_post(EV_NOTE_ON, 0, PRESETS[p].engine == ENGINE_ACID ? 45 : 60, 120);
-        run(44100 / 4, long_buf);
-        core_post(EV_NOTE_OFF, 0, 45, 0);
-        run(frames - 44100 / 4, &long_buf[2 * (44100 / 4)]);
+        core_post(EV_NOTE_ON, 0, note, 120);
+        run(hold, long_buf);
+        core_post(EV_NOTE_OFF, 0, note, 0);
+        run(frames - hold, &long_buf[2 * hold]);
         for (f = 0; f < frames; f++) {
             int32_t a = long_buf[2 * f] < 0 ? -long_buf[2 * f] : long_buf[2 * f];
             if (a > peak)
@@ -310,10 +313,209 @@ static void test_presets(void)
         CHECK(peak < (1 << 23), "%s within 24 bits", PRESETS[p].name);
         CHECK(last < frames - 4410, "%s dies away (last at %u)", PRESETS[p].name, last);
         CHECK(core_voices_active() == 0, "%s voice freed", PRESETS[p].name);
-        snprintf(name, sizeof name, "preset_%02u", p);
+        snprintf(name, sizeof name, "preset_%s", PRESETS[p].name);
+        for (f = 0; name[f]; f++)
+            if (name[f] == ' ' || name[f] == '.')
+                name[f] = '_';
         golden(name, hash32(long_buf, 2 * frames));
         wav_write(name, long_buf, frames);
     }
+}
+
+/* ------------------------------------------------------ Phase 4: voices and the bus --- */
+static void set_preset(uint32_t trk, const char *name)
+{
+    int p = preset_find(name);
+    CHECK(p >= 0, "preset %s exists", name);
+    preset_apply(&g_proj.pat.trk[trk], (uint32_t)(p < 0 ? 0 : p));
+}
+
+static void test_pool(void)
+{
+    uint32_t t, i, total;
+    fresh(1200);
+    for (t = 0; t < 4; t++)
+        set_preset(t, "WARM PAD");                 /* four poly tracks */
+    g_proj.pat.trk[0].p[PR_CHORD] = 4;             /* track 1: MIN7, four voices a note */
+    core_post(EV_NOTE_ON, 0, 60, 100);
+    run(64, 0);
+    CHECK(pool_active(0) == 4, "a MIN7 chord takes 4 voices: %u", pool_active(0));
+    core_post(EV_NOTE_ON, 0, 62, 100);             /* the track at its limit: its own oldest go */
+    run(64, 0);
+    CHECK(pool_active(0) == 4, "still 4 on the track: %u", pool_active(0));
+    for (i = 0, total = 0; i < NPOOL; i++)
+        total += g_pool[i].used && g_pool[i].track == 0 && g_pool[i].key == 62;
+    CHECK(total == 4, "the new chord replaced the old one: %u voices of D", total);
+    for (t = 1; t < 4; t++) {                      /* fill the pool: 3 tracks x 4 notes */
+        for (i = 0; i < 4; i++)
+            core_post(EV_NOTE_ON, t, 48 + i * 3, 100);
+    }
+    run(64, 0);
+    for (i = 0, total = 0; i < NPOOL; i++)
+        total += g_pool[i].used;
+    CHECK(total == 16, "the pool is full: %u", total);
+    core_post(EV_NOTE_OFF, 2, 51, 0);              /* a released voice on track 3 */
+    run(64, 0);
+    core_post(EV_NOTE_ON, 1, 70, 100);             /* track 2 at its limit: steals its own oldest (48) */
+    run(64, 0);
+    for (i = 0, total = 0; i < NPOOL; i++)
+        total += g_pool[i].used && g_pool[i].track == 1 && g_pool[i].note == 48;
+    CHECK(total == 0 && pool_active(1) == 4, "track 2 stole its own oldest note");
+    CHECK(pool_active(2) == 4, "track 3 kept its voices (its released one is its own business)");
+}
+
+/* RMS of the left channel over [a, b) */
+static double rms(const int32_t *lr, uint32_t a, uint32_t b)
+{
+    double s = 0;
+    uint32_t i;
+    for (i = a; i < b; i++)
+        s += (double)lr[2 * i] * lr[2 * i];
+    return __builtin_sqrt(s / (b - a));
+}
+
+static void test_pump(void)
+{
+    double near0, far0, near1, far1;
+    uint32_t i;
+    for (i = 0; i < 2; i++) {
+        fresh(1200);
+        g_proj.fx[FX_DLY_LEVEL] = g_proj.fx[FX_REV_LEVEL] = 0;
+        g_proj.pat.trk[0].p[PR_LEVEL] = 0;         /* a silent kick still pumps */
+        on(0, 0);
+        on(0, 4);
+        set_preset(7, "SUB BASS");                 /* a bass on track 8, held by hand */
+        g_proj.fx[FX_PUMP] = i ? 127 : 0;
+        g_proj.fx[FX_PUMP_REL] = 60;
+        play();
+        core_post(EV_NOTE_ON, 7, 45, 100);
+        run((uint32_t)(Q120 * 2), long_buf);
+        /* just after the second kick vs just before it */
+        if (i) {
+            near1 = rms(long_buf, (uint32_t)Q120 + 200, (uint32_t)Q120 + 1500);
+            far1 = rms(long_buf, (uint32_t)Q120 - 3000, (uint32_t)Q120 - 200);
+        } else {
+            near0 = rms(long_buf, (uint32_t)Q120 + 200, (uint32_t)Q120 + 1500);
+            far0 = rms(long_buf, (uint32_t)Q120 - 3000, (uint32_t)Q120 - 200);
+        }
+    }
+    printf("pump: bass after/before a kick %.2f without, %.2f with\n", near0 / far0, near1 / far1);
+    CHECK(near0 / far0 > 0.8, "no pump: the bass stays");
+    CHECK(near1 / far1 < 0.5, "pump: the kick ducks the bass by 6 dB or more");
+    wav_write("pump", long_buf, (uint32_t)(Q120 * 2));
+}
+
+static void test_delay_reverb(void)
+{
+    uint32_t i, d, pl = 0, pr = 0;
+    int32_t ml = 0, mr = 0;
+    /* a rim shot into the dub delay: 3/16 at 120 BPM = 16537 samples; echo 1 on the left, echo 2 on the right */
+    fresh(1200);
+    g_proj.fx[FX_REV_LEVEL] = 0;
+    g_proj.fx[FX_DLY_TIME] = 2;
+    g_proj.fx[FX_DLY_LEVEL] = 127;
+    g_proj.fx[FX_DLY_FB] = 90;
+    g_proj.pat.trk[4].p[PR_SEND_D] = 127;          /* (sends are after the level: the dry hit stays) */
+    run(4096, 0);
+    core_post(EV_NOTE_ON, 4, 60, 127);
+    run(44100 * 2, long_buf);
+    d = (uint32_t)(S120 * 3);
+    for (i = 0; i < 44100 * 2; i++) {
+        int32_t l = long_buf[2 * i] < 0 ? -long_buf[2 * i] : long_buf[2 * i];
+        int32_t r = long_buf[2 * i + 1] < 0 ? -long_buf[2 * i + 1] : long_buf[2 * i + 1];
+        if (i > d / 2 && i < d + d / 2 && l > ml) ml = l, pl = i;
+        if (i > d + d / 2 && i < 2 * d + d / 2 && r > mr) mr = r, pr = i;
+    }
+    printf("delay: first echo left at %u (want ~%u), second right at %u (want ~%u)\n", pl, d, pr, 2 * d);
+    CHECK(pl >= d && pl < d + 400, "echo 1 left on time");
+    CHECK(pr >= 2 * d && pr < 2 * d + 400, "echo 2 right on time");
+    wav_write("delay_echoes", long_buf, 44100 * 2);
+
+    /* the reverb's tail: a clap into it */
+    fresh(1200);
+    g_proj.fx[FX_DLY_LEVEL] = 0;
+    g_proj.fx[FX_REV_LEVEL] = 127;
+    g_proj.fx[FX_REV_SIZE] = 110;
+    g_proj.pat.trk[1].p[PR_SEND_R] = 127;
+    run(4096, 0);
+    core_post(EV_NOTE_ON, 1, 60, 127);
+    run(44100 * 3, long_buf);
+    {
+        double t1 = rms(long_buf, 13230, 22050), t2 = rms(long_buf, 44100, 52920), t3 = rms(long_buf, 120000, 130000);
+        printf("reverb: rms at 0.3-0.5 s %.0f, 1.0-1.2 s %.0f, 2.7-2.9 s %.0f (the clap itself is over by 0.1 s)\n",
+               t1, t2, t3);
+        CHECK(t1 > 1e4 && t2 > t1 * 0.01 && t2 < t1 && t3 < t2, "a tail that decays");
+    }
+    wav_write("reverb_tail", long_buf, 44100 * 3);
+}
+
+static void test_djf_comp(void)
+{
+    uint32_t f;
+    int32_t pk0 = 0, pk1 = 0;
+    double hf0, hf1;
+    /* the DJ filter's low-pass on the hats: much less energy left in the 16ths' clicks */
+    for (f = 0; f < 2; f++) {
+        uint32_t i;
+        double s = 0;
+        fresh(1200);
+        g_proj.fx[FX_DLY_LEVEL] = g_proj.fx[FX_REV_LEVEL] = 0;
+        for (i = 0; i < 16; i++)
+            on(2, i);
+        g_proj.fx[FX_DJF] = f ? 20 : 64;
+        play();
+        run(44100, long_buf);
+        for (i = 1; i < 44100; i++) {              /* first difference: a crude high-pass */
+            double dd = (double)long_buf[2 * i] - long_buf[2 * i - 2];
+            s += dd * dd;
+        }
+        if (f) hf1 = s; else hf0 = s;
+    }
+    printf("dj filter: high-frequency energy %.1f dB with LP 40\n", 10 * __builtin_log10(hf1 / hf0));
+    CHECK(hf1 < hf0 * 0.05, "the low-pass takes the hats' top off");
+    /* the compressor: the demo's peaks come down */
+    /* the compressor: a loud passage and a quiet one come closer together */
+    {
+        double ratio[2];
+        for (f = 0; f < 2; f++) {
+            fresh(1200);
+            g_proj.fx[FX_DLY_LEVEL] = g_proj.fx[FX_REV_LEVEL] = 0;
+            g_proj.fx[FX_COMP] = f ? 127 : 0;
+            set_preset(7, "SUB BASS");
+            run(4096, 0);
+            core_post(EV_NOTE_ON, 7, 45, 127);
+            run(22050, long_buf);
+            core_post(EV_NOTE_OFF, 7, 45, 0);
+            core_post(EV_NOTE_ON, 7, 45, 25);
+            run(22050, &long_buf[2 * 22050]);
+            ratio[f] = rms(long_buf, 11025, 22050) / rms(long_buf, 33075, 44100);
+            if (f) pk1 = 1; else pk0 = 1;
+        }
+        printf("compressor: loud/quiet %.1f dB without, %.1f dB with\n", 20 * __builtin_log10(ratio[0]),
+               20 * __builtin_log10(ratio[1]));
+        CHECK(ratio[1] < ratio[0] * 0.7, "the compressor brings loud and quiet closer (3 dB or more)");
+        (void)pk0;
+        (void)pk1;
+    }
+}
+
+/* the master bus at its neutral settings leaves the sound exactly as it was, bit for bit */
+static void test_bus_neutral(void)
+{
+    static int32_t a[2 * 44100];
+    uint32_t h1, h2;
+    core_init();
+    g_proj.fx[FX_DLY_LEVEL] = g_proj.fx[FX_REV_LEVEL] = 0;
+    core_post(EV_PLAY, 0, 0, 0);
+    run(44100, a);
+    h1 = hash32(a, 2 * 44100);
+    core_init();
+    core_fx_bypass = 1;
+    core_post(EV_PLAY, 0, 0, 0);
+    run(44100, a);
+    core_fx_bypass = 0;
+    h2 = hash32(a, 2 * 44100);
+    CHECK(h1 == h2, "a neutral bus is transparent: %08x vs %08x", h1, h2);
 }
 
 static void test_demo(void)
@@ -365,7 +567,24 @@ static void test_worst_case(void)
     c0 = clock();
     run(44100 * 4, 0);
     sec = (double)(clock() - c0) / CLOCKS_PER_SEC;
-    printf("worst case: 4 s of audio in %.1f ms on this host (%.1f%% of real time)\n", sec * 1000, sec / 4 * 100);
+    printf("worst case (drums + acid): %.1f%% of real time here\n", sec / 4 * 100);
+    /* and with the heavy engines: two supersaw chord tracks (4 voices each), FM, the hoover, sends everywhere */
+    set_preset(3, "RAVE STAB");
+    set_preset(4, "HOOVER");
+    set_preset(5, "E.PIANO");
+    set_preset(7, "RAVE STAB");
+    g_proj.pat.trk[3].p[PR_DECAY] = g_proj.pat.trk[7].p[PR_DECAY] = 110;
+    g_proj.pat.trk[3].p[PR_SUSTAIN] = g_proj.pat.trk[7].p[PR_SUSTAIN] = 127;
+    for (t = 0; t < NTRACKS; t++)
+        g_proj.pat.trk[t].p[PR_SEND_D] = g_proj.pat.trk[t].p[PR_SEND_R] = 100;
+    g_proj.fx[FX_PUMP] = 100;
+    g_proj.fx[FX_COMP] = 100;
+    g_proj.fx[FX_DJF] = 40;
+    core_post(EV_PLAY, 0, 0, 0);
+    c0 = clock();
+    run(44100 * 4, 0);
+    sec = (double)(clock() - c0) / CLOCKS_PER_SEC;
+    printf("worst case (+ chords, FM, hoover, every send, pump, comp, DJ): %.1f%% of real time here\n", sec / 4 * 100);
     CHECK(core_voices_active() >= 6, "the voices are busy: %u", core_voices_active());
 }
 
@@ -668,6 +887,70 @@ static void test_stack_latency(void)
     CHECK(hits == 8 && late == 0, "every kick shows on the next frame: %u hits, %u late", hits, late);
 }
 
+/* Phase 4 in the UI: the FX view, a synth's pages, the chord memory, the stack's DJ filter and pump */
+static void test_ui_phase4(void)
+{
+    int p;
+    memset(&in, 0, sizeof in);
+    in.master = 4096;
+    core_init();
+    stack_reset();
+    ui_init();
+    frame();
+    key_tap(UI_WHITE[0]);                      /* leave the flyer */
+    btn_tap(UB_FX);
+    CHECK(ui_view() == VIEW_FX, "FX: the master bus");
+    in.enc[UE_K1] = 1;                         /* delay time 3/16 -> 1/4 */
+    frame();
+    CHECK(g_proj.fx[FX_DLY_TIME] == 3, "K1: the delay time steps (%u)", g_proj.fx[FX_DLY_TIME]);
+    snapshot("fx_delay");
+    btn_tap(UB_FX);
+    btn_tap(UB_FX);                            /* page 3: pump, comp, DJ */
+    {
+        uint32_t p0 = g_proj.fx[FX_PUMP];
+        in.enc[UE_K1] = 10;                    /* pump up (accelerated x4) */
+        frame();
+        CHECK(g_proj.fx[FX_PUMP] == p0 + 40, "pump +40: %u -> %u", p0, g_proj.fx[FX_PUMP]);
+    }
+    snapshot("fx_pump");
+    /* the stack: K3 the DJ filter */
+    btn_tap(UB_HOME);
+    in.enc[UE_K3] = -3;
+    frame();
+    CHECK(g_proj.fx[FX_DJF] == 64 - 12, "K3 on the stack: DJ filter low-pass (%u)", g_proj.fx[FX_DJF]);
+    g_proj.fx[FX_DJF] = 64;
+    /* track 8 to CHORD MEM: PRESET until there */
+    btn_tap(UB_SEQ);
+    key_tap(UI_BLACK[7]);
+    p = preset_find("CHORD MEM");
+    while (g_proj.pat.trk[7].preset != p) {
+        in.enc[UE_PRESET] = 1;
+        frame();
+    }
+    btn_tap(UB_EDIT);
+    snapshot("edit_chord_mem");
+    /* KEYS mode: hold C, E flat, G, B flat and press LFO: a minor 7th becomes the memory */
+    btn_tap(UB_SEQ);
+    key_tap(UI_BLACK[BK_KEYS]);
+    in.keys = 1u << 7 | 1u << 10 | 1u << 14 | 1u << 17;   /* C4 Eb4 G4 Bb4 */
+    frame();
+    btn_tap(UB_LFO);
+    in.keys = 0;
+    frame();
+    {
+        const int8_t *c = g_proj.pat.trk[7].chord;
+        CHECK(c[0] == 0 && c[1] == 3 && c[2] == 7 && c[3] == 10 && g_proj.pat.trk[7].p[PR_CHORD] == 1,
+              "the chord memory: 0 3 7 10 (got %d %d %d %d)", c[0], c[1], c[2], c[3]);
+    }
+    in.keys = 1u << 2;                         /* one key now plays the whole chord */
+    frame();
+    run(256, 0);
+    CHECK(pool_active(7) == 4, "one key, four voices: %u", pool_active(7));
+    in.keys = 0;
+    frame();
+    btn_tap(UB_SEQ);
+}
+
 static void test_cabinets(void)
 {
     int k;
@@ -700,11 +983,17 @@ int main(int argc, char **argv)
     test_polymeter_conditions_dirs();
     test_mute_solo_rec_tempo();
     test_presets();
+    test_pool();
+    test_pump();
+    test_delay_reverb();
+    test_djf_comp();
+    test_bus_neutral();
     test_demo();
     test_worst_case();
     test_ui();
     test_stack();
     test_stack_latency();
+    test_ui_phase4();
     test_cabinets();
     golden_save();
     printf("%d checks, %d failed\n", checks, fails);

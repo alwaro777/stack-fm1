@@ -12,28 +12,6 @@
 #define ACID_CTL 16u             /* control block: glide, cutoff and resonance step every 16 samples */
 #define AMP_NORMAL 47000         /* Q16: an unaccented note sits ~3 dB under an accented one */
 
-/* polyBLEP correction for a falling edge at the phase wrap, Q15 (phase and increment as uint32) */
-static inline int32_t blep(uint32_t ph, uint32_t inc)
-{
-    uint32_t d = (inc >> 16) | 1u;
-    if (ph < inc) {                               /* just after the wrap: x = ph / inc */
-        int32_t x = (int32_t)((ph >> 1) / d);
-        int32_t u = 32768 - clampi(x, 0, 32768);
-        return -((u * u) >> 15);
-    }
-    if (ph > ~inc) {                              /* just before it: r = distance to the wrap */
-        int32_t x = (int32_t)(((~ph + 1u) >> 1) / d);
-        int32_t u = 32768 - clampi(x, 0, 32768);
-        return (u * u) >> 15;
-    }
-    return 0;
-}
-
-static inline int32_t saw(uint32_t ph, uint32_t inc)   /* rising saw, Q15 */
-{
-    return (int32_t)(ph >> 16) - 32768 - blep(ph, inc);
-}
-
 void acid_trigger(avoice_t *v, const track_t *t, uint32_t note, uint32_t vel, uint32_t flags, int legato)
 {
     int32_t target = ((int32_t)note << 8) + ((int32_t)t->p[PR_TUNE] - 64) * 96;
@@ -87,9 +65,9 @@ void acid_render(avoice_t *v, const track_t *t, int32_t *out, uint32_t n)
         inc = dsp_note_inc(v->note256);
         v->ph += inc;
         if (wave == 0)
-            x = saw(v->ph, inc);
+            x = dsp_saw(v->ph, inc);
         else if (wave == 1)
-            x = (saw(v->ph, inc) - saw(v->ph + 0x80000000u, inc)) >> 1;
+            x = (dsp_saw(v->ph, inc) - dsp_saw(v->ph + 0x80000000u, inc)) >> 1;
         else
             x = dsp_sin(v->ph);
         /* the ladder: the input minus the resonance's feedback, through tanh, then four poles */

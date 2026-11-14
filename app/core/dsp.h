@@ -48,6 +48,28 @@ static inline uint32_t dsp_note_inc(int32_t note256)
     return a + (((b - a) >> 8) * f);      /* (b - a) >> 8 < 2^24, * f < 2^32 */
 }
 
+/* polyBLEP correction for a falling edge at the phase wrap, Q15 (phase and increment as uint32) */
+static inline int32_t dsp_blep(uint32_t ph, uint32_t inc)
+{
+    uint32_t d = (inc >> 16) | 1u;
+    if (ph < inc) {                               /* just after the wrap: x = ph / inc */
+        int32_t x = (int32_t)((ph >> 1) / d);
+        int32_t u = 32768 - clampi(x, 0, 32768);
+        return -((u * u) >> 15);
+    }
+    if (ph > ~inc) {                              /* just before it: r = distance to the wrap */
+        int32_t x = (int32_t)(((~ph + 1u) >> 1) / d);
+        int32_t u = 32768 - clampi(x, 0, 32768);
+        return (u * u) >> 15;
+    }
+    return 0;
+}
+
+static inline int32_t dsp_saw(uint32_t ph, uint32_t inc)   /* rising saw, Q15 */
+{
+    return (int32_t)(ph >> 16) - 32768 - dsp_blep(ph, inc);
+}
+
 /* one-pole coefficient (TPT) for a cutoff in 1/256 semitone, Q15 */
 static inline int32_t dsp_onepole_g(int32_t note256)
 {
@@ -128,6 +150,115 @@ static inline int32_t env_apply(int32_t x, int32_t env)
 static inline int32_t gain15(int32_t x, int32_t g)
 {
     return (clampi(x, -65535, 65535) * g) >> 15;
+}
+
+/* ------------------------------------------------------- state-variable filter --- */
+/* TPT state-variable filter (Zavalishin's form): stable at any cutoff and resonance, low-, band- and high-pass from
+ * one structure. Coefficients at the control rate (svf_set), one sample at a time (svf_run). States kept within
+ * ±65535, coefficients Q14 <= 1, so every product stays under 2^30. */
+typedef struct {
+    int32_t ic1, ic2;            /* the two integrators' states */
+    int32_t a1, a2, a3, k;       /* Q14, Q14, Q14; k Q12 (2 = no resonance .. ~0.05 = screaming) */
+} svf_t;
+
+enum { SVF_LP, SVF_BP, SVF_HP };
+
+static inline void svf_set(svf_t *f, int32_t note256, int32_t reso127)
+{
+    uint32_t n, fr;
+    int32_t g, den;
+    note256 = clampi(note256, 0, 127 << 8);
+    n = (uint32_t)note256 >> 8;
+    fr = (uint32_t)note256 & 0xFFu;
+    g = TAB_SVF_G[n] + (((TAB_SVF_G[n + 1] - TAB_SVF_G[n]) * (int32_t)fr) >> 8);   /* Q12, <= 25800 */
+    f->k = 8192 - clampi(reso127, 0, 127) * 63;                                     /* Q12: 2.0 .. 0.05 */
+    den = 4096 + ((g * ((g + f->k) >> 2)) >> 10);                                   /* Q12: 1 + g (g + k) */
+    f->a1 = (int32_t)((1u << 26) / (uint32_t)den);                                   /* Q14 */
+    f->a2 = (g * f->a1) >> 12;
+    f->a3 = (g * f->a2) >> 12;
+}
+
+static inline int32_t svf_run(svf_t *f, int32_t x, int mode)
+{
+    int32_t v1, v2, v3;
+    x = clampi(x, -32767, 32767);
+    v3 = clampi(x - f->ic2, -65535, 65535);
+    v1 = ((f->a1 * f->ic1) >> 14) + ((f->a2 * v3) >> 14);
+    v2 = f->ic2 + ((f->a2 * f->ic1) >> 14) + ((f->a3 * v3) >> 14);
+    f->ic1 = clampi(2 * v1 - f->ic1, -65535, 65535);
+    f->ic2 = clampi(2 * v2 - f->ic2, -65535, 65535);
+    if (mode == SVF_LP)
+        return v2;
+    if (mode == SVF_BP)
+        return v1;
+    return x - ((f->k * clampi(v1, -65535, 65535)) >> 12) - v2;
+}
+
+/* ------------------------------------------------------------------- ADSR --- */
+/* Attack: a straight ramp; decay to sustain and release to zero: exponential, stepped at the control rate. Q16. */
+enum { ADSR_OFF, ADSR_ATTACK, ADSR_DECAY, ADSR_SUSTAIN, ADSR_RELEASE };
+typedef struct {
+    uint8_t stage, n;
+    int32_t level, target, step;
+    int32_t att_inc;             /* per sample, Q16 */
+    int32_t sus;                 /* Q16 */
+    uint16_t kd, kr;             /* per control block, Q16 */
+} adsr_t;
+
+static inline void adsr_gate(adsr_t *e, uint32_t a, uint32_t d, uint32_t s, uint32_t r)
+{
+    uint32_t att_samples = (uint32_t)TAB_DECAY_MS[a > 127u ? 127u : a] * 44u / 4u + 1u;   /* (ramps are quicker) */
+    e->att_inc = (int32_t)(65536u / att_samples) + 1;
+    e->kd = TAB_DECAY_K[d > 127u ? 127u : d];
+    e->kr = TAB_DECAY_K[r > 127u ? 127u : r];
+    e->sus = (int32_t)(s > 127u ? 127u : s) * 516;
+    e->stage = ADSR_ATTACK;
+    e->n = 0;
+}
+
+static inline void adsr_release(adsr_t *e)
+{
+    if (e->stage != ADSR_OFF) {
+        e->stage = ADSR_RELEASE;
+        e->n = 0;
+    }
+}
+
+static inline int32_t adsr_tick(adsr_t *e)
+{
+    switch (e->stage) {
+    case ADSR_ATTACK:
+        e->level += e->att_inc;
+        if (e->level >= ENV_ONE) {
+            e->level = ENV_ONE;
+            e->stage = ADSR_DECAY;
+            e->n = 0;
+        }
+        return e->level;
+    case ADSR_DECAY:
+    case ADSR_SUSTAIN:
+    case ADSR_RELEASE:
+        if (!e->n) {
+            int32_t floor = e->stage == ADSR_RELEASE ? 0 : e->sus;
+            uint16_t k = e->stage == ADSR_RELEASE ? e->kr : e->kd;
+            int32_t next = floor + (int32_t)(((uint32_t)(e->level - floor) * k) >> 16);
+            if (e->stage == ADSR_RELEASE && next < 64)
+                next = 0;
+            e->target = next;
+            e->step = (next - e->level) / TAB_CTL;
+            e->n = TAB_CTL;
+        }
+        e->n--;
+        e->level += e->step;
+        if (!e->n) {
+            e->level = e->target;
+            if (e->stage == ADSR_RELEASE && !e->level)
+                e->stage = ADSR_OFF;
+        }
+        return e->level < 0 ? 0 : e->level;
+    default:
+        return 0;
+    }
 }
 
 #endif

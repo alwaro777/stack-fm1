@@ -28,7 +28,7 @@ typedef struct {                 /* what the UI asks of the panel's lights */
 } ui_leds_t;
 
 /* VIEW_STACK: the sound system, the main screen */
-enum { VIEW_SPLASH, VIEW_SEQ, VIEW_EDIT, VIEW_GLOBAL, VIEW_STACK, VIEW_HELP, VIEW_IO };
+enum { VIEW_SPLASH, VIEW_SEQ, VIEW_EDIT, VIEW_GLOBAL, VIEW_STACK, VIEW_HELP, VIEW_IO, VIEW_FX };
 
 void ui_init(void);
 /* one UI frame: input, then a redraw into fb when something changed. now in ms. Returns 1 if fb changed. */

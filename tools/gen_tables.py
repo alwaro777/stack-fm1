@@ -55,6 +55,14 @@ def main(out):
     t.append("/* one-pole (TPT) coefficient G = g/(1+g), g = tan(pi f/fs), f = MIDI note n's frequency; Q15 */")
     t.append(arr("TAB_ONEPOLE_G", "int16_t", g, 12))
 
+    # state-variable filter: g = tan(pi f / fs) for MIDI note 0..127 (+ guard), Q12, clamped below Nyquist
+    sg = []
+    for n in range(129):
+        f = min(440.0 * 2 ** ((n - 69) / 12), SR * 0.45)
+        sg.append(round(4096 * math.tan(math.pi * f / SR)))
+    t.append("/* state-variable filter (TPT) g = tan(pi f/fs), f = MIDI note n's frequency; Q12 */")
+    t.append(arr("TAB_SVF_G", "int32_t", sg, 12))
+
     # constant-power pan, 0..127 (64 = centre): left and right gains, Q15
     pl, pr = [], []
     for p in range(128):

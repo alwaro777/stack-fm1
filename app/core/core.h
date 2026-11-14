@@ -7,6 +7,11 @@
 #include <stdint.h>
 #include "model.h"
 
+/* where the big buffers live: the platform glue puts them in its large RAM pool (fm1-base PLAT_POOL) */
+#ifndef STK_BIG
+#define STK_BIG
+#endif
+
 #define STK_SR 44100u            /* nominal rate (the FM-1 really runs at 24 MHz / 544 = 44 117.6 Hz) */
 #define STK_MAX_BLOCK 256u       /* frames per render call, upper bound (app.h APP_BLOCK) */
 #define PPQN 96                  /* sequencer ticks per quarter note: a 16th is 24 */
@@ -26,6 +31,7 @@ typedef struct {
 extern volatile uint32_t core_mute, core_solo;   /* bit t = track t */
 extern volatile uint8_t core_fill;               /* FILL held */
 extern volatile uint8_t core_rec;                /* live recording armed: notes played while running are written */
+extern volatile uint8_t core_fx_bypass;          /* tests: the master bus skipped (to prove neutral is transparent) */
 
 void core_init(void);            /* the default project: the demo pattern, stopped */
 void core_clear_project(void);   /* an empty pattern on the default kit */
@@ -43,5 +49,14 @@ uint32_t core_loops(uint32_t track); /* completed loops of the track since PLAY 
 int core_trig_pop(trig_t *t);        /* 1 = one taken */
 uint32_t core_voices_active(void);   /* tracks whose voice is sounding */
 uint32_t core_peak(void);            /* output peak since the last call, Q15 */
+
+/* the master bus (fx.c) */
+void fx_init(void);
+void fx_pump_kick(void);
+int fx_pump_fill(int32_t *duck, uint32_t n);
+void fx_bus(int32_t *l, int32_t *r, const int32_t *sd, const int32_t *sr, uint32_t n, int32_t spt_q16, int any_dly,
+            int any_rev);
+extern const uint8_t DLY_STEPS[6];
+extern const char *const DLY_NAME[6];
 
 #endif

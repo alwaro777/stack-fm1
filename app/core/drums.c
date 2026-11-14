@@ -6,6 +6,9 @@
  *   clap    band-passed noise under three quick bursts, then a tail
  *   hats    six square waves at inharmonic ratios, high-passed twice: the metallic cluster; open is choked by closed
  *   rim, tom, cowbell: short pitched voices
+ *   shaker  high-passed noise with a soft attack (the beads' swing)
+ *   ride    the hats' cluster a sixth higher with a bell partial on top, ringing long
+ *   crash   noise and the cluster, a bright burst then a long wash
  * Params (0..127): TUNE (64 = the preset's pitch, ±24 semitones), DECAY, TONE (model's colour), SNAP (noise / click),
  * DRIVE. */
 #include "engine.h"
@@ -68,13 +71,25 @@ void drum_trigger(dvoice_t *v, const track_t *t, uint32_t note, uint32_t vel, ui
     case DM_CLAP:
         denv_start(&v->amp, ENV_ONE, decay);                     /* (used for the tail, from the third burst) */
         break;
+    case DM_RIDE:
+    case DM_CRASH:
     case DM_HAT_C:
     case DM_HAT_O: {
-        uint32_t r = ratio_q12(sh);
+        uint32_t r;
+        if (v->model == DM_RIDE || v->model == DM_CRASH)   /* the same cluster, higher */
+            sh += v->model == DM_RIDE ? 9 * 256 : 5 * 256;
+        r = ratio_q12(sh);
+        v->ph_bell = 0;
         for (i = 0; i < 6; i++)
             v->inc[i] = (((uint32_t)HAT_HZ10[i] * 9739u) >> 12) * r;   /* Hz x10 -> inc, then x ratio */
+        if (v->model == DM_RIDE)
+            denv_start(&v->aux, ENV_ONE, 70u);                   /* the bell's ring */
+        if (v->model == DM_CRASH)
+            denv_start(&v->aux, ENV_ONE, 40u);                   /* the burst */
         break;
     }
+    case DM_SHAKER:
+        break;
     case DM_RIM:
         v->inc[0] = dsp_note_inc(92 * 256 + 128 + sh);           /* ~1.7 kHz */
         v->ph[0] = 0;
@@ -179,6 +194,42 @@ void drum_render(dvoice_t *v, const track_t *t, int32_t *out, uint32_t n)
             x = x - dsp_lp1(&v->z[0], x, g);                      /* high-pass twice */
             x = x - dsp_lp1(&v->z[1], x, g);
             x = clampi(x, -32767, 32767) * 4;                     /* what is left of the cluster is quiet: +12 dB */
+            out[i] += gain15(env_apply(drive_sat(x, v->drive, 0), a), vel);
+        }
+        break;
+    }
+    case DM_SHAKER: {
+        int32_t ghp = dsp_onepole_g(106 * 256 + v->tone * 16), glp = dsp_onepole_g(122 * 256);
+        for (i = 0; i < n; i++) {
+            int32_t a = denv_tick(&v->amp), x = dsp_noise(&v->rnd), att;
+            x = dsp_lp1(&v->z[1], x - dsp_lp1(&v->z[0], x, ghp), glp);
+            att = v->t < 260u ? (int32_t)v->t * 252 : 65535;      /* a 6 ms swell */
+            x = env_apply(env_apply(x * 3, att), a);
+            out[i] += gain15(drive_sat(x, v->drive, 0), vel);
+            v->t++;
+        }
+        break;
+    }
+    case DM_RIDE:
+    case DM_CRASH: {
+        int32_t g = dsp_onepole_g(98 * 256 + v->tone * 16), mixn = v->snap * 200;
+        int crash = v->model == DM_CRASH;
+        uint32_t bell = dsp_note_inc(91 * 256 + 64);              /* ~3.1 kHz */
+        for (i = 0; i < n; i++) {
+            int32_t a = denv_tick(&v->amp), e2 = denv_tick(&v->aux), x = 0, k;
+            for (k = 0; k < 6; k++) {
+                v->ph[k] += v->inc[k];
+                x += (int32_t)(v->ph[k] >> 31) * 2 - 1;
+            }
+            x = x * 3000 + ((dsp_noise(&v->rnd) * ((crash ? mixn + 12000 : mixn) >> 8)) >> 7);
+            x = x - dsp_lp1(&v->z[0], x, g);
+            x = clampi(x, -32767, 32767) * 2;
+            if (!crash) {                                         /* the bell */
+                v->ph_bell += bell;
+                x += env_apply(dsp_sin(v->ph_bell) >> 1, e2);
+            } else {
+                x = env_apply(x, 32768 + (e2 >> 1));               /* the burst over the wash */
+            }
             out[i] += gain15(env_apply(drive_sat(x, v->drive, 0), a), vel);
         }
         break;

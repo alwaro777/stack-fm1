@@ -1,5 +1,5 @@
 # STACK in fm1-base's host simulator (make sim): the flyer, the sound system, the sequencer, edits, mute, I/O.
-# view: 0 flyer, 1 seq, 2 edit, 3 global, 4 sound system, 5 help, 6 I/O test
+# view: 0 flyer, 1 seq, 2 edit, 3 global, 4 sound system, 5 help, 6 I/O test, 7 FX
 wait 600
 shot boot.png
 expect view 0
@@ -40,6 +40,15 @@ expect view 4
 tapkey b0
 wait 400
 shot stack_kick_muted.png
+# FX: the master bus; K1 on page 1 is the delay time
+tap FX
+wait 50
+expect view 7
+turn K1 1
+wait 100
+shot fx.png
+tap HOME
+wait 50
 # SHIFT+FX: the I/O test; HOME back
 press HOME
 wait 30

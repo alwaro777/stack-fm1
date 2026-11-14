@@ -38,7 +38,14 @@ typedef struct {
 /* one track's sound: 0..127 each. Engines read the ones they use (engine.h names them per engine). */
 enum {
     PR_LEVEL, PR_PAN, PR_TUNE, PR_DECAY, PR_TONE, PR_SNAP, PR_CUTOFF, PR_RESO, PR_ENVMOD, PR_DRIVE, PR_ACCENT,
-    PR_WAVE, NPARAMS
+    PR_WAVE,
+    /* Phase 4 */
+    PR_ATTACK, PR_SUSTAIN, PR_RELEASE,   /* the amplitude's ADSR with DECAY (synth, FM, FX) */
+    PR_DETUNE,                   /* oscillator spread (supersaw, reese, ensemble) */
+    PR_MOD,                      /* modulation depth: FM index, siren and riser depth */
+    PR_CHORD,                    /* 0 = single notes, 1 = the track's chord memory, 2.. = a chord from the table */
+    PR_SEND_D, PR_SEND_R,        /* sends to the delay and the reverb */
+    NPARAMS
 };
 
 enum { CAT_SUB, CAT_MID, CAT_TOP, NCATS };   /* where the track's cabinet goes in the stack (Phase 3) */
@@ -56,6 +63,7 @@ typedef struct {
     uint8_t category;            /* CAT_* */
     uint8_t midi_ch;             /* 0 = none, 1..16 (Phase 5) */
     uint8_t p[NPARAMS];
+    int8_t chord[4];             /* the chord memory: intervals in semitones (the first is 0), -128 = unused */
 } track_t;
 
 typedef struct {
@@ -63,11 +71,24 @@ typedef struct {
 } pattern_t;
 
 /* --------------------------------------------------------------- global --- */
+/* the master bus: the send effects, the pump, the compressor, the DJ filter (0..127 each) */
+enum {
+    FX_DLY_TIME,                 /* in 16ths: index into the delay's time list (1/16 .. 1/2, dotted 1/8 the dub one) */
+    FX_DLY_FB, FX_DLY_TONE, FX_DLY_LEVEL,
+    FX_REV_SIZE, FX_REV_DAMP, FX_REV_LEVEL,
+    FX_PUMP,                     /* sidechain depth: the kicks duck everything else */
+    FX_PUMP_REL,
+    FX_COMP,                     /* master compression amount */
+    FX_DJF,                      /* one knob: 64 open, under it low-pass, over it high-pass */
+    NFX
+};
+
 typedef struct {
     pattern_t pat;
     uint16_t bpm10;              /* tempo in tenths: 200..3000 = 20..300 BPM */
     uint8_t swing;               /* 50..75 %: where the off-beat 16th sits inside its 8th */
     uint8_t seed;                /* the probability's dice start from this at each PLAY (repeatable) */
+    uint8_t fx[NFX];
 } project_t;
 
 extern project_t g_proj;

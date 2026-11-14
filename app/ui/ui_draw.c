@@ -279,8 +279,10 @@ static void draw_edit(void)
     /* the preset, big, with its engine; PRESET turns it */
     fb_text(4, 18, "PRESET", P_GRAY, 1);
     fb_text_shadow(4, 30, PRESETS[t->preset].name, P_YELLOW, P_MAGENTA, 2, 1);
-    fb_text(FB_W - 4 - fb_text_w(t->engine == ENGINE_ACID ? "ACID" : "DRUM", 1), 18,
-            t->engine == ENGINE_ACID ? "ACID" : "DRUM", P_LIME, 1);
+    {
+        const char *g = PRESET_GROUP[PRESETS[t->preset].group];
+        fb_text(FB_W - 4 - fb_text_w(g, 1), 18, g, P_LIME, 1);
+    }
     /* page tabs */
     for (i = 0; i < np; i++) {
         int32_t x = 4 + i * 30;
@@ -383,6 +385,40 @@ static void draw_stack(uint32_t now)
     ui_steps_bar(214);
 }
 
+/* --------------------------------------------------------------- FX --- */
+static void draw_fx(void)
+{
+    static const char *const FX_TITLE[3] = {"FX 1/3 DUB DELAY", "FX 2/3 REVERB", "FX 3/3 PUMP COMP DJ"};
+    char v[16];
+    int k, i;
+    fb_clear(P_NIGHT);
+    ui_header(FX_TITLE[ui.fx_page]);
+    for (k = 0; k < 4; k++) {
+        int id = UI_FX_PAGE[ui.fx_page][k];
+        if (id < 0)
+            continue;
+        ui_fx_text(id, v, sizeof v);
+        knob_box(4 + k * 59, 30, 55, UI_FX_NAME[id], v, g_proj.fx[id], 0, id == FX_DLY_TIME ? 5 : 127, 0);
+    }
+    /* what each track sends: two bars a track */
+    fb_text(4, 82, "SENDS   DELAY / REVERB", P_GRAY, 1);
+    for (i = 0; i < NTRACKS; i++) {
+        const track_t *t = &g_proj.pat.trk[i];
+        int32_t x = 4 + i * 29;
+        char n[2];
+        n[0] = (char)('1' + i);
+        n[1] = 0;
+        fb_text(x + 10, 96, n, lamp((uint32_t)i) ? P_YELLOW : P_LGRAY, 1);
+        fb_rect(x + 6, 108, 7, 64, P_BLACK);
+        fb_rect(x + 15, 108, 7, 64, P_BLACK);
+        fb_rect(x + 6, 108 + 64 - t->p[PR_SEND_D] / 2, 7, t->p[PR_SEND_D] / 2, P_ORANGE);
+        fb_rect(x + 15, 108 + 64 - t->p[PR_SEND_R] / 2, 7, t->p[PR_SEND_R] / 2, P_CYAN);
+    }
+    fb_text(4, 182, "THE KICKS DRIVE THE PUMP;", P_GRAY, 1);
+    fb_text(4, 192, "SENDS ARE ON EACH TRACK'S EDIT.", P_GRAY, 1);
+    footer("FX/ALGO: PAGE   STACK K3 DJ, K4 PUMP");
+}
+
 /* ------------------------------------------------------------- HELP --- */
 static void draw_help(void)
 {
@@ -392,13 +428,12 @@ static void draw_help(void)
         "BLACK 9/10   PAGE / FILL (HOLD)",
         "BLACK 11     KEYS MODE (SEQ: BACK)",
         "PLAY  REC    PLAY-STOP / LIVE REC",
-        "SEQ EDIT ENV GLO   VIEWS",
+        "SEQ EDIT ENV GLO FX  VIEWS",
         "HOME (TAP)   THE SOUND SYSTEM",
         "OCT- OCT+    PAGE / OCTAVE",
         "SELECT       TRACK",
         "ALGO         KNOB PAGE",
-        "PRESET       SOUND",
-        "",
+        "PRESET       SOUND   KEYS+LFO: CHORD",
         "HOME HELD = SHIFT, THEN:",
         "SEQ COPY  EDIT PASTE  REC CLEAR",
         "SAVE UNDO  PLAY DEMO  FX I/O TEST",
@@ -408,7 +443,7 @@ static void draw_help(void)
     fb_clear(P_BLACK);
     ui_header("HELP");
     for (i = 0; i < sizeof L / sizeof L[0]; i++)
-        fb_text(4, 18 + (int32_t)i * 12, L[i], i >= 12 ? P_LIME : P_LGRAY, 1);
+        fb_text(4, 18 + (int32_t)i * 12, L[i], i >= 11 ? P_LIME : P_LGRAY, 1);
     footer("SHIFT+GLO: CLOSE");
 }
 
@@ -484,6 +519,7 @@ void ui_draw(uint32_t now)
     case VIEW_STACK: draw_stack(now); break;
     case VIEW_HELP: draw_help(); break;
     case VIEW_IO: draw_io(); break;
+    case VIEW_FX: draw_fx(); break;
     default: draw_seq(); break;
     }
 }

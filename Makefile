@@ -17,7 +17,7 @@ EMSDK ?= $(HOME)/emsdk
 FRIBIDI = DYLD_FALLBACK_LIBRARY_PATH=$(HOME)/.local/fribidi/lib
 CC ?= cc
 CFLAGS_TEST = -std=c99 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -ffp-contract=off -fsanitize=address,undefined
-APP_SRC = app/core/core.c app/core/drums.c app/core/acid.c app/core/presets.c app/ui/fb.c app/ui/ui.c app/ui/ui_draw.c app/ui/cabinet.c app/ui/stack.c
+APP_SRC = app/core/core.c app/core/drums.c app/core/acid.c app/core/synth.c app/core/fm.c app/core/fxsyn.c app/core/voices.c app/core/fx.c app/core/presets.c app/ui/fb.c app/ui/ui.c app/ui/ui_draw.c app/ui/cabinet.c app/ui/stack.c
 
 .PHONY: test unit host sim web serve fw record tables clean
 

@@ -75,46 +75,63 @@ static void say(const char *a, const char *b)
 }
 
 /* --------------------------------------------------------------- params --- */
-/* the knob pages per engine: param ids, PX_* for the track's sequencer settings */
-static const int8_t PAGES_DRUM[][4] = {{PR_TUNE, PR_DECAY, PR_TONE, PR_SNAP},
-                                       {PR_DRIVE, PR_LEVEL, PR_PAN, PX_CAT},
-                                       {PX_LEN, PX_SCALE, PX_DIR, PX_CH}};
-static const int8_t PAGES_ACID[][4] = {{PR_CUTOFF, PR_RESO, PR_ENVMOD, PR_DECAY},
-                                       {PR_ACCENT, PR_DRIVE, PR_WAVE, PR_SNAP},
-                                       {PR_TUNE, PR_LEVEL, PR_PAN, PX_CAT},
-                                       {PX_LEN, PX_SCALE, PX_DIR, PX_CH}};
+/* the knob pages per engine: param ids, PX_* for the track's sequencer settings, PX_NONE for an empty knob */
+#define MAXPAGES 6
+typedef struct {
+    uint8_t n;
+    int8_t id[MAXPAGES][4];
+} pages_t;
+static const pages_t PAGES[NENGINES] = {
+    {4, {{PR_TUNE, PR_DECAY, PR_TONE, PR_SNAP}, {PR_DRIVE, PR_LEVEL, PR_PAN, PX_CAT},
+         {PR_SEND_D, PR_SEND_R, PX_NONE, PX_NONE}, {PX_LEN, PX_SCALE, PX_DIR, PX_CH}}},
+    {5, {{PR_CUTOFF, PR_RESO, PR_ENVMOD, PR_DECAY}, {PR_ACCENT, PR_DRIVE, PR_WAVE, PR_SNAP},
+         {PR_TUNE, PR_LEVEL, PR_PAN, PX_CAT}, {PR_SEND_D, PR_SEND_R, PX_NONE, PX_NONE},
+         {PX_LEN, PX_SCALE, PX_DIR, PX_CH}}},
+    {6, {{PR_CUTOFF, PR_RESO, PR_ENVMOD, PR_TONE}, {PR_ATTACK, PR_DECAY, PR_SUSTAIN, PR_RELEASE},
+         {PR_WAVE, PR_DETUNE, PR_CHORD, PR_DRIVE}, {PR_TUNE, PR_LEVEL, PR_PAN, PX_CAT},
+         {PR_SEND_D, PR_SEND_R, PX_NONE, PX_NONE}, {PX_LEN, PX_SCALE, PX_DIR, PX_CH}}},
+    {5, {{PR_MOD, PR_TONE, PR_DETUNE, PR_DRIVE}, {PR_ATTACK, PR_DECAY, PR_SUSTAIN, PR_RELEASE},
+         {PR_TUNE, PR_LEVEL, PR_PAN, PX_CAT}, {PR_SEND_D, PR_SEND_R, PX_NONE, PX_NONE},
+         {PX_LEN, PX_SCALE, PX_DIR, PX_CH}}},
+    {5, {{PR_DECAY, PR_TONE, PR_MOD, PR_RESO}, {PR_ATTACK, PR_SUSTAIN, PR_RELEASE, PR_DRIVE},
+         {PR_TUNE, PR_LEVEL, PR_PAN, PX_CAT}, {PR_SEND_D, PR_SEND_R, PR_WAVE, PX_NONE},
+         {PX_LEN, PX_SCALE, PX_DIR, PX_CH}}},
+};
 
 int ui_npages(const track_t *t)
 {
-    return t->engine == ENGINE_ACID ? 4 : 3;
+    return PAGES[t->engine < NENGINES ? t->engine : 0].n;
 }
 
 int ui_page_param(const track_t *t, int page, int k)
 {
-    if (t->engine == ENGINE_ACID)
-        return PAGES_ACID[page % 4][k & 3];
-    return PAGES_DRUM[page % 3][k & 3];
+    const pages_t *p = &PAGES[t->engine < NENGINES ? t->engine : 0];
+    return p->id[page % p->n][k & 3];
 }
 
 const char *ui_param_name(const track_t *t, int id)
 {
     static const char *const PX[] = {"LEN", "SCALE", "DIR", "CAT", "MIDI CH"};
+    if (id == PX_NONE)
+        return "";
     if (id >= PX_LEN)
         return PX[id - PX_LEN];
     return PARAM_NAME[t->engine < NENGINES ? t->engine : 0][id] ? PARAM_NAME[t->engine][id] : "--";
 }
 
-/* value 0..max and its range */
+/* value and its range */
 int ui_param_get(const track_t *t, int id, int *lo, int *hi)
 {
     *lo = 0;
     *hi = 127;
     switch (id) {
+    case PX_NONE: *hi = 0; return 0;
     case PX_LEN: *lo = 1; *hi = NSTEPS; return t->len;
     case PX_SCALE: *hi = NSCALES - 1; return t->scale;
     case PX_DIR: *hi = NDIRS - 1; return t->dir;
     case PX_CAT: *hi = NCATS - 1; return t->category;
     case PX_CH: *hi = 16; return t->midi_ch;
+    case PR_CHORD: *hi = (int)NCHORDS - 1; return t->p[id];
     default: return t->p[id];
     }
 }
@@ -125,6 +142,7 @@ static void param_set(track_t *t, int id, int v)
     ui_param_get(t, id, &lo, &hi);
     v = v < lo ? lo : v > hi ? hi : v;
     switch (id) {
+    case PX_NONE: break;
     case PX_LEN: t->len = (uint8_t)v; break;
     case PX_SCALE: t->scale = (uint8_t)v; break;
     case PX_DIR: t->dir = (uint8_t)v; break;
@@ -134,14 +152,31 @@ static void param_set(track_t *t, int id, int v)
     }
 }
 
+static void ms_text(char *d, uint32_t ms, uint32_t cap)
+{
+    if (ms >= 1000u) {
+        ui_int(d, (int32_t)(ms / 1000u), cap);
+        ui_cat(d, ".", cap);
+        ui_int(d, (int32_t)(ms % 1000u / 100u), cap);
+        ui_cat(d, "S", cap);
+    } else {
+        ui_int(d, (int32_t)ms, cap);
+        ui_cat(d, "MS", cap);
+    }
+}
+
 void ui_param_text(const track_t *t, int id, char *d, uint32_t cap)
 {
     static const char *const SCALE[NSCALES] = {"1/32", "1/16", "1/8", "1/4", "1/16T", "1/8T"};
     static const char *const DIR[NDIRS] = {"FWD", "REV", "PING", "RAND"};
     static const char *const CAT[NCATS] = {"SUB", "MID", "TOP"};
-    static const char *const WAVE[3] = {"SAW", "SQUARE", "SINE"};
+    static const char *const AWAVE[3] = {"SAW", "SQUARE", "SINE"};
+    static const char *const SWAVE[NOSCS] = {"SAW", "SQUARE", "SUPER", "PWM", "SINE"};
+    static const char *const FILT[3] = {"LOWPASS", "BANDPASS", "HIGHPASS"};
     int lo, hi, v = ui_param_get(t, id, &lo, &hi);
     d[0] = 0;
+    if (id == PX_NONE)
+        return;
     if (id < PX_LEN && !PARAM_NAME[t->engine][id]) {
         ui_cat(d, "--", cap);
         return;
@@ -162,17 +197,69 @@ void ui_param_text(const track_t *t, int id, char *d, uint32_t cap)
         ui_cat(d, "ST", cap);
         return;
     case PR_DECAY:
-        ui_int(d, TAB_DECAY_MS[v & 127], cap);
-        ui_cat(d, "MS", cap);
+    case PR_RELEASE:
+        ms_text(d, TAB_DECAY_MS[v & 127], cap);
         return;
+    case PR_ATTACK:
+        ms_text(d, TAB_DECAY_MS[v & 127] / 4u, cap);   /* (ramps are a quarter of the decays' times: adsr_gate) */
+        return;
+    case PR_SUSTAIN:
+    case PR_SEND_D:
+    case PR_SEND_R:
+        ui_int(d, v * 100 / 127, cap);
+        ui_cat(d, "%", cap);
+        return;
+    case PR_CHORD: ui_cat(d, CHORD_NAME[v], cap); return;
     case PR_WAVE:
-        if (t->engine == ENGINE_ACID) { ui_cat(d, WAVE[v / 43], cap); return; }
+        if (t->engine == ENGINE_ACID) { ui_cat(d, AWAVE[v / 43], cap); return; }
+        if (t->engine == ENGINE_SYNTH) { ui_cat(d, SWAVE[v * NOSCS / 128], cap); return; }
+        if (t->engine == ENGINE_FX) { ui_cat(d, v >= 64 ? "SINE" : "SQUARE", cap); return; }
+        break;
+    case PR_TONE:
+        if (t->engine == ENGINE_SYNTH) { ui_cat(d, FILT[v / 43], cap); return; }
         break;
     case PR_SNAP:
         if (t->engine == ENGINE_ACID) { ui_cat(d, v >= 64 ? "18DB" : "24DB", cap); return; }
         break;
     }
     ui_int(d, v, cap);
+}
+
+/* the master bus's knobs (the FX view): three pages */
+const int8_t UI_FX_PAGE[3][4] = {{FX_DLY_TIME, FX_DLY_FB, FX_DLY_TONE, FX_DLY_LEVEL},
+                                 {FX_REV_SIZE, FX_REV_DAMP, FX_REV_LEVEL, -1},
+                                 {FX_PUMP, FX_PUMP_REL, FX_COMP, FX_DJF}};
+const char *const UI_FX_NAME[NFX] = {"DLY TIME", "FEEDBACK", "TONE", "DLY LVL", "SIZE", "DAMP", "REV LVL",
+                                     "PUMP", "PUMP REL", "COMP", "DJ FILTER"};
+
+void ui_fx_text(int id, char *d, uint32_t cap)
+{
+    int v = g_proj.fx[id];
+    d[0] = 0;
+    if (id == FX_DLY_TIME) {
+        ui_cat(d, DLY_NAME[v < 6 ? v : 2], cap);
+    } else if (id == FX_DJF) {
+        if (v >= 60 && v <= 68)
+            ui_cat(d, "OFF", cap);
+        else {
+            ui_cat(d, v < 60 ? "LP " : "HP ", cap);
+            ui_int(d, v < 60 ? 60 - v : v - 68, cap);
+        }
+    } else if (id == FX_PUMP_REL) {
+        ms_text(d, TAB_DECAY_MS[50 + v / 2], cap);
+    } else {
+        ui_int(d, v * 100 / 127, cap);
+        ui_cat(d, "%", cap);
+    }
+}
+
+static void fx_turn(int id, int d)
+{
+    int hi = id == FX_DLY_TIME ? 5 : 127, v = g_proj.fx[id];
+    if (id < 0)
+        return;
+    v += id == FX_DLY_TIME ? (d > 0 ? 1 : -1) : d;
+    g_proj.fx[id] = (uint8_t)(v < 0 ? 0 : v > hi ? hi : v);
 }
 
 /* step fields edited with a step held: page 0 NOTE VEL GATE PROB, page 1 RATCHET NUDGE COND ACC/SLD */
@@ -293,6 +380,8 @@ static void shift_action(uint32_t b)             /* SHIFT (HOME held) + a button
     ui.dirty = 1;
 }
 
+static void chord_capture(uint32_t keys);
+
 static void button(uint32_t b)                   /* a press, SHIFT not held */
 {
     switch (b) {
@@ -334,11 +423,39 @@ static void button(uint32_t b)                   /* a press, SHIFT not held */
         }
         break;
     }
-    case UB_FX: case UB_SEL: case UB_LFO: case UB_ARP: case UB_SAVE:
-        say("PHASE 4-5", "");                      /* FX, scales, p-locks, patterns, saving: coming */
+    case UB_FX:
+        if (ui.view == VIEW_FX)
+            ui.fx_page = (ui.fx_page + 1) % 3;
+        ui.view = VIEW_FX;
+        break;
+    case UB_LFO:
+        if (ui.keys_mode && ui.prev.keys)
+            chord_capture(ui.prev.keys);
+        else
+            say("P-LOCKS", "PHASE 5");
+        break;
+    case UB_SEL: case UB_ARP: case UB_SAVE:
+        say("PHASE 5", "");                        /* scales, patterns, saving: coming */
         break;
     }
     ui.dirty = 1;
+}
+
+/* KEYS mode, keys held + LFO: those notes become the track's chord memory (CHORD = MEMORY) */
+static void chord_capture(uint32_t keys)
+{
+    int k, n = 0, lowest = -1;
+    track_t *t = cur();
+    for (k = 0; k < UI_NKEYS && n < 4; k++)
+        if (keys >> k & 1u) {
+            if (lowest < 0)
+                lowest = k;
+            t->chord[n++] = (int8_t)(k - lowest);
+        }
+    for (k = n; k < 4; k++)
+        t->chord[k] = -128;
+    t->p[PR_CHORD] = 1;
+    say("CHORD", "STORED");
 }
 
 static void black_key(int k, int shift)
@@ -436,6 +553,8 @@ static void knobs(const ui_input_t *in)
             ui.step_page ^= 1;
         else if (ui.view == VIEW_GLOBAL)
             ui.glo_page ^= 1;
+        else if (ui.view == VIEW_FX)
+            ui.fx_page = (ui.fx_page + d + 3) % 3;
         else if (ui.view == VIEW_EDIT || ui.view == VIEW_SEQ)
             ui.edit_page = (ui.edit_page + d + ui_npages(t)) % ui_npages(t);
     }
@@ -446,6 +565,14 @@ static void knobs(const ui_input_t *in)
         if (ui.held_step >= 0) {                   /* a held step: its fields */
             step_edit(&t->step[ui.held_step], ui.step_page, k, d);
             ui.held_edited = 1;
+        } else if (ui.view == VIEW_FX) {
+            fx_turn(UI_FX_PAGE[ui.fx_page][k], d);
+        } else if (ui.view == VIEW_STACK && k >= 2) {   /* the stack: K3 the DJ filter, K4 the pump */
+            char t[12];
+            int id = k == 2 ? FX_DJF : FX_PUMP;
+            fx_turn(id, d);
+            ui_fx_text(id, t, sizeof t);
+            say(k == 2 ? "DJ FILTER" : "PUMP", t);
         } else if (ui.view == VIEW_GLOBAL && ui.glo_page == 1) {
             if (k == 0)
                 ui.scanlines = d > 0;

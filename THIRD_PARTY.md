@@ -13,8 +13,10 @@ It is built on the following, each under its own licence:
 Not used: M-VAVE's closed `libfm1_engine.a` (fm1_open). Because STACK links no closed binary, the FM1 SDK linking
 exception does not apply.
 
-Planned (added when used, with their licence files): msfa / Dexed FM core (Apache-2.0), Felucca-Engines DSP
-primitives (MIT).
+Designs followed (no code copied): the reverb follows the structure of Freeverb by Jezar at Dreampoint (public
+domain); the state-variable filter follows Vadim Zavalishin's TPT form ("The Art of VA Filter Design"); the
+oscillators use the polyBLEP technique (Välimäki et al.). The FM engine is STACK's own two-pair design: neither the
+closed M-VAVE engine nor msfa is used.
 
 The reference photo `reference/kawa-soundsystem.jpg` is a visual reference supplied by the project owner. It is not
 part of the firmware or the web emulator, and none of its names or logos are reproduced.

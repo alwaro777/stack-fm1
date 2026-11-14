@@ -139,3 +139,28 @@ Medidas (host, Apple Silicon; el FM-1 sin medir todavía):
   caja apagada; 8 de 8 kicks visibles en el frame siguiente a 140 BPM.
 - No hecho (opcional en el encargo): auto-clasificar la categoría por centroide espectral. El número de patrón es fijo
   (P01) hasta la Fase 5.
+
+### F4 — motores, biblioteca y FX globales (hecho)
+- **Pool de voces** (16, hasta 4 por pista) para los motores polifónicos, con robo determinista: libre → la más
+  antigua liberada de la pista (si está en su límite) → su más antigua → la más antigua liberada → la más antigua.
+- **Sinte VA**: SAW, SQUARE, SUPER (5 sierras desafinadas), PWM, SINE; DETUNE (supersaw / segundo oscilador que deriva
+  con un LFO lento: ensemble tipo chorus en pads); filtro de estado variable TPT (LP/BP/HP, estable con resonancia
+  alta); ADSR; modelos POLY, MONO (glide), HOOVER (supersaw + sub, entra una quinta por debajo), CHORD.
+- **Acordes**: tabla (MAJ, MIN, MIN7, MAJ7, DOM7, SUS4, quintas, MIN9, octava) y **memoria por pista**: en modo KEYS
+  mantener notas y pulsar LFO guarda el acorde.
+- **FM propio** (no el binario cerrado): dos pares modulador→portadora, realimentación; E.PIANO, BELL, MALLET, FM BASS.
+- **Motor FX**: RISER, DOWNLIFTER, DUB SIREN, LASER, SWEEP, IMPACT, VINYL.
+- **Percusión nueva**: SHAKER, RIDE, CRASH.
+- **Biblioteca**: 36 presets en 6 grupos (DRUMS 13, BASS 5, LEAD 5, KEYS 3, PAD 3, FX 7).
+- **Bus master**: envíos post-fader por pista a un delay dub ping-pong sincronizado (1/16–1/2, 0,74 s máx.) y a una
+  reverb de diseño Freeverb; pump desde los kicks (incluso silenciados en nivel); compresor (umbral −18 dB, 4:1
+  mezclado por AMOUNT, con make-up); filtro DJ de un knob. Ajustes neutros = audio idéntico bit a bit (test).
+- **UI**: vista FX (3 páginas), páginas de knobs por motor (hasta 6), grupo del preset en EDIT, K3/K4 del sound system
+  = filtro DJ y pump.
+- **Medidas**: en Apple M1 con -O2, demo 0,33 % del tiempo real; peor caso pesado (dos stabs supersaw de 4 voces, FM,
+  hoover, todos los envíos, pump, compresor, DJ, ratchets ×4 a 1/32) 1,2 %. Estimación FM-1 (25–50× más lento):
+  demo ~8–17 %, peor caso ~30–60 % de un core. **Sin medir en hardware**: si no cabe, en F6 se reduce la supersaw
+  a 3 sierras, la reverb a media tasa o se usa el segundo core.
+- **RAM (estimada)**: pool de fm1-base: framebuffer 28,1 + fondo 28,1 + bandas 15 + delay 128 + reverb 24 ≈ 223 KiB
+  de 336; .bss propio ≈ 20 KiB.
+- Pendiente: p-locks (F5, con patrones y guardado).

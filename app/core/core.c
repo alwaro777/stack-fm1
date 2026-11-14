@@ -19,6 +19,7 @@
 project_t g_proj;
 volatile uint32_t core_mute, core_solo;
 volatile uint8_t core_fill, core_rec;
+volatile uint8_t core_fx_bypass;
 
 /* ------------------------------------------------------------- queues --- */
 static struct {
@@ -211,7 +212,7 @@ static void decide(uint32_t ti)
         int32_t g = s->gate ? s->gate : 1;
         int32_t last = first + (nh - 1) * spt / nh;
         int32_t glen = nh > 1 ? spt / nh * g / 16 : spt * g / 16;
-        q_add(p, (uint32_t)(last + (glen > 0 ? glen : 1)), QE_OFF, 0, 0, 0, pos);
+        q_add(p, (uint32_t)(last + (glen > 0 ? glen : 1)), QE_OFF, s->note, 0, 0, pos);
     }
 }
 
@@ -233,6 +234,9 @@ static void voice_sync(uint32_t ti)
         return;
     for (i = 0; i < sizeof voice[ti]; i++)
         ((uint8_t *)&voice[ti])[i] = 0;
+    for (i = 0; i < NPOOL; i++)                   /* (and the pool voices it held under the old engine) */
+        if (g_pool[i].used && g_pool[i].track == ti)
+            g_pool[i].used = 0;
     voice_engine[ti] = (uint8_t)e;
     tp[ti].held = tp[ti].tied = 0;
 }
@@ -244,8 +248,14 @@ static void voice_hit(uint32_t ti, uint32_t note, uint32_t vel, uint32_t flags, 
     voice_sync(ti);
     if (t->engine == ENGINE_ACID) {
         acid_trigger(&voice[ti].a, t, note, vel, flags, legato);
+    } else if (t->engine == ENGINE_SYNTH || t->engine == ENGINE_FM) {
+        pool_note_on(ti, note, vel, flags, legato);
+    } else if (t->engine == ENGINE_FX) {
+        fx_trigger(&voice[ti].x, t, note, vel);
     } else {
         drum_trigger(&voice[ti].d, t, note, vel, flags);
+        if (DM_IS_KICK(t->model))                 /* the kicks drive the pump */
+            fx_pump_kick();
         if (t->model == DM_HAT_C)                 /* a closed hat chokes every open one */
             for (j = 0; j < NTRACKS; j++)
                 if (g_proj.pat.trk[j].engine == ENGINE_DRUM && g_proj.pat.trk[j].model == DM_HAT_O &&
@@ -254,11 +264,27 @@ static void voice_hit(uint32_t ti, uint32_t note, uint32_t vel, uint32_t flags, 
     }
 }
 
-static void voice_off(uint32_t ti)
+static void voice_off(uint32_t ti, uint32_t note)   /* note 255: whatever the track holds */
 {
+    uint32_t e = g_proj.pat.trk[ti].engine;
     voice_sync(ti);
-    if (g_proj.pat.trk[ti].engine == ENGINE_ACID)
+    if (e == ENGINE_ACID)
         acid_release(&voice[ti].a);
+    else if (e == ENGINE_SYNTH || e == ENGINE_FM)
+        pool_note_off(ti, note);
+    else if (e == ENGINE_FX)
+        fx_release(&voice[ti].x);
+}
+
+static int voice_active(uint32_t ti)
+{
+    switch (g_proj.pat.trk[ti].engine) {
+    case ENGINE_ACID: return voice[ti].a.active;
+    case ENGINE_SYNTH:
+    case ENGINE_FM: return pool_active(ti) != 0;
+    case ENGINE_FX: return voice[ti].x.active;
+    default: return voice[ti].d.active;
+    }
 }
 
 static void fire(uint32_t ti, const qev_t *e)
@@ -271,7 +297,7 @@ static void fire(uint32_t ti, const qev_t *e)
     case QE_HIT:
         if (!track_audible(ti)) {
             if (p->held)
-                voice_off(ti);
+                voice_off(ti, 255);
             p->held = 0;
             p->tied = (e->flags & STEP_SLIDE) != 0;
             break;
@@ -283,7 +309,7 @@ static void fire(uint32_t ti, const qev_t *e)
         break;
     case QE_OFF:
         if (p->held)
-            voice_off(ti);
+            voice_off(ti, e->note ? e->note : 255u);
         p->held = 0;
         break;
     }
@@ -323,7 +349,7 @@ static void transport_play(void)
     uint32_t i;
     for (i = 0; i < NTRACKS; i++) {
         if (tp[i].held)
-            voice_off(i);
+            voice_off(i, 255);
         tp[i].next_nominal = 0;
         tp[i].count = 0;
         tp[i].pos = 0;
@@ -346,7 +372,7 @@ static void transport_stop(void)
     playing = 0;
     for (i = 0; i < NTRACKS; i++) {
         if (tp[i].held)
-            voice_off(i);
+            voice_off(i, 255);
         tp[i].held = tp[i].tied = 0;
         tp[i].nq = 0;
         tp[i].play_pos = -1;
@@ -385,11 +411,11 @@ static void events(void)
                 record(ti, note, vel ? vel : 100);
             break;
         case EV_NOTE_OFF:
-            voice_off(ti);
+            voice_off(ti, note);
             break;
         case EV_ALL_OFF:
             for (i = 0; i < NTRACKS; i++)
-                voice_off(i);
+                voice_off(i, 255);
             break;
         case EV_PLAY:
             transport_play();
@@ -404,35 +430,53 @@ static void events(void)
 /* -------------------------------------------------------------- render --- */
 static int32_t trk_buf[STK_MAX_BLOCK];
 static int32_t mix_l[STK_MAX_BLOCK], mix_r[STK_MAX_BLOCK];
+static int32_t send_d[STK_MAX_BLOCK], send_r[STK_MAX_BLOCK], duck[STK_MAX_BLOCK];
 
 static void render_chunk(int32_t *lr, uint32_t n, int32_t target)
 {
     uint32_t ti, f;
     uint32_t pk = peak_q15;
+    int pumping, any_d = 0, any_r = 0;
     for (f = 0; f < n; f++)
-        mix_l[f] = mix_r[f] = 0;
+        mix_l[f] = mix_r[f] = send_d[f] = send_r[f] = 0;
+    pumping = fx_pump_fill(duck, n);
     for (ti = 0; ti < NTRACKS; ti++) {
         const track_t *t = &g_proj.pat.trk[ti];
         int32_t lvl = (int32_t)t->p[PR_LEVEL] * t->p[PR_LEVEL] * 2;          /* a squared curve, Q15 */
         int32_t gl = (lvl * (TAB_PAN_L[t->p[PR_PAN] & 127] >> 1)) >> 14;     /* < 2^15 * 2^14 */
         int32_t gr = (lvl * (TAB_PAN_R[t->p[PR_PAN] & 127] >> 1)) >> 14;
-        int act;
+        int32_t gd = (lvl * ((int32_t)t->p[PR_SEND_D] * 129)) >> 14;     /* sends: after the level, Q15 */
+        int32_t gs = (lvl * ((int32_t)t->p[PR_SEND_R] * 129)) >> 14;
+        int ducked = pumping && !(t->engine == ENGINE_DRUM && DM_IS_KICK(t->model));
         voice_sync(ti);
-        act = t->engine == ENGINE_ACID ? voice[ti].a.active : voice[ti].d.active;
-        if (!act)
+        if (!voice_active(ti))
             continue;
         for (f = 0; f < n; f++)
             trk_buf[f] = 0;
-        if (t->engine == ENGINE_ACID)
-            acid_render(&voice[ti].a, t, trk_buf, n);
-        else
-            drum_render(&voice[ti].d, t, trk_buf, n);
+        switch (t->engine) {
+        case ENGINE_ACID: acid_render(&voice[ti].a, t, trk_buf, n); break;
+        case ENGINE_SYNTH:
+        case ENGINE_FM: pool_render(ti, trk_buf, n); break;
+        case ENGINE_FX: fx_render(&voice[ti].x, t, trk_buf, n); break;
+        default: drum_render(&voice[ti].d, t, trk_buf, n); break;
+        }
+        any_d |= gd != 0;
+        any_r |= gs != 0;
         for (f = 0; f < n; f++) {
             int32_t x = clampi(trk_buf[f], -65535, 65535);
+            if (ducked)
+                x = (x * (duck[f] >> 1)) >> 14;
             mix_l[f] += (x * (gl >> 1)) >> 14;     /* < 2^16 * 2^14 */
             mix_r[f] += (x * (gr >> 1)) >> 14;
+            if (gd)
+                send_d[f] += (x * (gd >> 1)) >> 14;
+            if (gs)
+                send_r[f] += (x * (gs >> 1)) >> 14;
         }
     }
+    tempo_update();
+    if (!core_fx_bypass)
+        fx_bus(mix_l, mix_r, send_d, send_r, n, spt_q16, any_d, any_r);
     /* the master: a soft limiter (tanh, the sum at 3/4 into it), then MASTER, gliding so it never clicks */
     for (f = 0; f < n; f++) {
         int32_t l = dsp_tanh(clampi(mix_l[f] - (mix_l[f] >> 2), -131071, 131071));
@@ -488,9 +532,11 @@ void core_panic(void)
         voice[i].d.active = 0;
         voice[i].a.active = 0;
         voice[i].a.amp = 0;
+        voice[i].x.active = 0;
         tp[i].held = tp[i].tied = 0;
         tp[i].nq = 0;
     }
+    pool_init();
 }
 
 int core_playing(void) { return playing; }
@@ -505,7 +551,7 @@ uint32_t core_voices_active(void)
 {
     uint32_t i, c = 0;
     for (i = 0; i < NTRACKS; i++)
-        c += g_proj.pat.trk[i].engine == ENGINE_ACID ? voice[i].a.active : voice[i].d.active;
+        c += (uint32_t)voice_active(i);
     return c;
 }
 
@@ -517,8 +563,10 @@ uint32_t core_peak(void)
 }
 
 /* ------------------------------------------------------------ projects --- */
-/* 909, clap, closed hat, open hat, rim, tom, acid saw, sub bass (PRESETS[] indices) */
-static const uint8_t DEFAULT_KIT[NTRACKS] = {1, 4, 5, 6, 7, 8, 10, 12};
+static const char *const DEFAULT_KIT[NTRACKS] = {"909 PUNCH", "CLAP", "CL HAT", "OP HAT", "RIM", "TOM",
+                                                 "ACID SAW", "SUB BASS"};
+/* the master bus's defaults: a dotted-8th dub delay and a mid room ready on the sends; no pump, no squash */
+static const uint8_t FX_DEFAULT[NFX] = {2, 70, 80, 90, 90, 50, 80, 0, 60, 0, 64};
 
 static void step_default(step_t *s)
 {
@@ -546,8 +594,14 @@ void core_clear_project(void)
         t->scale = SCALE_16;
         t->dir = DIR_FWD;
         t->midi_ch = 0;
-        preset_apply(t, DEFAULT_KIT[ti]);
+        preset_apply(t, (uint32_t)preset_find(DEFAULT_KIT[ti]));
+        t->chord[0] = 0;
+        t->chord[1] = 4;
+        t->chord[2] = 7;
+        t->chord[3] = -128;
     }
+    for (ti = 0; ti < NFX; ti++)
+        g_proj.fx[ti] = FX_DEFAULT[ti];
 }
 
 static void on(uint32_t ti, uint32_t s, uint32_t note, uint32_t vel, uint32_t flags)
@@ -586,19 +640,32 @@ void core_load_demo(void)
     for (i = 0; i < 16; i++)
         if (ACID[i])
             on(6, i, ACID[i], ACID_F[i] & STEP_ACCENT ? 120 : 96, ACID_F[i]);
+    /* Phase 4: a minor-seventh rave stab on track 6 into the dub delay, the clap into the reverb, the rim into the
+     * delay, and a little pump from the kick */
+    preset_apply(&g_proj.pat.trk[5], (uint32_t)preset_find("RAVE STAB"));
+    on(5, 0, 57, 110, 0);
+    on(5, 10, 57, 96, 0);
+    g_proj.pat.trk[5].step[10].cond = COND_1_2;
+    g_proj.pat.trk[5].p[PR_SEND_D] = 70;
+    g_proj.pat.trk[1].p[PR_SEND_R] = 50;
+    g_proj.pat.trk[4].p[PR_SEND_D] = 80;
+    g_proj.fx[FX_PUMP] = 50;
 }
 
 void core_init(void)
 {
     uint32_t i;
+    for (i = 0; i < sizeof voice; i++)            /* every voice from zero: noise seeds included (repeatable) */
+        ((uint8_t *)voice)[i] = 0;
+    for (i = 0; i < sizeof g_pool; i++)
+        ((uint8_t *)g_pool)[i] = 0;
     for (i = 0; i < NTRACKS; i++) {
-        voice[i].d.active = 0;
-        voice[i].a.active = 0;
-        voice[i].a.amp = 0;
         tp[i].play_pos = -1;
         tp[i].nq = 0;
         tp[i].held = tp[i].tied = 0;
     }
+    pool_init();
+    fx_init();
     evq.head = evq.tail = 0;
     trigq.head = trigq.tail = 0;
     core_mute = core_solo = 0;
