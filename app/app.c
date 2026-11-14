@@ -12,6 +12,8 @@
 #include "core/voices.c"
 #include "core/fx.c"
 #include "core/presets.c"
+#include "core/pattern.c"
+#include "core/project.c"
 #include "ui/fb.c"
 #include "ui/cabinet.c"
 #include "ui/ui.c"
@@ -91,14 +93,122 @@ void app_splash(void)                    /* before the main loop: the flyer at t
     flush(FB_NBANDS);
 }
 
+/* ------------------------------------------------------------------ storage --- */
+/* One buffer for every object going to or from the flash (and lent to a backup restore). Saving writes only the
+ * objects whose bytes changed since they were last saved or loaded (a hash of each): a flash write stops the sound
+ * for a moment, so SAVE asks for the transport to be stopped first. */
+uint8_t stk_io[PROJ_IO_MAX] __attribute__((aligned(4))) PLAT_POOL;
+static uint32_t obj_hash[OBJ_NOBJ];
+static uint8_t backup_held;
+
+static uint32_t io_hash(uint32_t n)
+{
+    uint32_t h = 2166136261u, i;
+    for (i = 0; i < n; i++)
+        h = (h ^ stk_io[i]) * 16777619u;
+    return h ^ n;
+}
+
+static uint32_t encode(uint32_t obj)              /* the object's bytes into stk_io; its length */
+{
+    if (obj == OBJ_SETTINGS)
+        return proj_encode_settings(stk_io);
+    if (obj == OBJ_KIT)
+        return proj_encode_kit(stk_io);
+    return proj_encode_pattern(obj - OBJ_PAT0, stk_io);
+}
+
+static int project_dirty(void)                    /* anything not saved yet (for SAVE's light) */
+{
+    uint32_t o;
+    pattern_store_all();
+    for (o = 0; o < OBJ_NOBJ; o++) {
+        if (o == OBJ_PANEL)
+            continue;
+        if (io_hash(encode(o)) != obj_hash[o])
+            return 1;
+    }
+    return 0;
+}
+
+static int project_save(void)                     /* the objects that changed; -1 on a failed write */
+{
+    uint32_t o, n, wrote = 0;
+    if (backup_held)
+        return 0;
+    pattern_store_all();
+    for (o = 0; o < OBJ_NOBJ; o++) {
+        uint32_t h;
+        if (o == OBJ_PANEL)
+            continue;
+        n = encode(o);
+        h = io_hash(n);
+        if (h == obj_hash[o])
+            continue;
+        if (plat_store_save(o, stk_io, n) != 0)
+            return -1;
+        obj_hash[o] = h;
+        wrote++;
+    }
+    return (int)wrote;
+}
+
+static int project_load(void)                     /* 0 = a saved project is in; -1 = none (the demo stays) */
+{
+    uint32_t o;
+    int n = plat_store_load(OBJ_SETTINGS, stk_io, PROJ_IO_MAX);
+    if (n <= 0 || proj_decode_settings(stk_io, (uint32_t)n) != 0)
+        return -1;
+    n = plat_store_load(OBJ_KIT, stk_io, PROJ_IO_MAX);
+    if (n <= 0 || proj_decode_kit(stk_io, (uint32_t)n) != 0)
+        return -1;
+    for (o = 0; o < 16u; o++) {
+        n = plat_store_load(OBJ_PAT0 + o, stk_io, PROJ_IO_MAX);
+        if (n <= 0 || proj_decode_pattern(o, stk_io, (uint32_t)n) != 0)
+            bank_clear(&g_bank[o]);               /* (a pattern never saved: empty) */
+    }
+    pattern_load_current();
+    return 0;
+}
+
+static void hashes_now(int loaded)                /* loaded: what is in RAM is what is in the flash; else nothing
+                                                   * is (the first SAVE writes every object) */
+{
+    uint32_t o;
+    pattern_store_all();
+    for (o = 0; o < OBJ_NOBJ; o++)
+        obj_hash[o] = o == OBJ_PANEL || !loaded ? 0 : io_hash(encode(o));
+}
+
+int app_backup_playing(void) { return core_playing(); }
+void app_backup_flush(void) { project_save(); }
+void app_backup_hold(int on) { backup_held = (uint8_t)on; }
+void app_backup_restored(void)
+{
+    int ok;
+    core_init();
+    ok = project_load() == 0;
+    if (!ok)
+        core_load_demo();
+    hashes_now(ok);
+    stack_reset();
+}
+
 void app_init(void)
 {
-    core_init();
+    core_init();                          /* (the demo) */
+    hashes_now(project_load() == 0);      /* a saved project replaces it, if there is one */
 }
 
 void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
 {
+    uint32_t pkt;
+    int port;
+    while (plat_midi_in(&pkt, &port))     /* MIDI in, before the block: notes, clock, transport */
+        core_midi_in((pkt >> 8) & 0xFFu, (pkt >> 16) & 0x7Fu, (pkt >> 24) & 0x7Fu);
     core_render(lr, n, master_q12);
+    while (core_midi_pop(&pkt))           /* and out: the tracks' notes, the clock */
+        plat_midi_send(pkt, TO_USB);
 }
 
 void app_panic(void)
@@ -133,6 +243,27 @@ void app_frame(void)
         enc_pending[i] = 0;
     }
     ui_set_stats(plat_cpu_pct(), plat_xruns());
+    if (ui_take_save()) {                 /* SAVE: stopped only (a flash write stops the sound for a moment) */
+        int r;
+        if (core_playing()) {
+            ui_say("STOP", "TO SAVE");
+        } else if ((r = project_save()) < 0) {
+            ui_say("SAVE", "FAILED");
+        } else {
+            char t[8] = "";
+            ui_int(t, r, sizeof t);
+            ui_say("SAVED", r ? t : "NO CHANGE");
+        }
+    }
+    {
+        static uint32_t dirty_at;         /* SAVE lit while something is not saved: checked twice a second, stopped
+                                           * only (it copies the working pattern into the bank, which a switch under
+                                           * way in the audio interrupt also writes) */
+        if (!core_playing() && plat_ms() - dirty_at >= 500u) {
+            dirty_at = plat_ms();
+            ui_set_unsaved(project_dirty());
+        }
+    }
     if (ui_frame(&in, plat_ms()) || fb_changed_bands())
         flush(FLUSH_MAX_BANDS);
     ui_leds(&leds);
@@ -160,6 +291,10 @@ int app_expect(const char *what, int *got)
         *got = core_playing();
     else if (!strcmp(what, "pos"))
         *got = core_play_pos((uint32_t)ui.track);
+    else if (!strcmp(what, "pattern"))
+        *got = core_pattern();
+    else if (!strcmp(what, "step0"))     /* the selected track's first step: on? */
+        *got = g_proj.pat.trk[ui.track].step[0].flags & STEP_ON;
     else
         return 0;
     return 1;

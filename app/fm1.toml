@@ -5,6 +5,8 @@ usb_manufacturer = "STACK"
 usb_product = "STACK FM-1"
 # Bluetooth stays off until Phase 5 (its RAM is better spent on audio buffers first: docs/PLAN.md R7)
 ble = false
+backup = true                  # the project's objects backed up and restored over USB (web/backup, fm1_backup.py)
+emu = ["backup", "midi"]       # the emulator: Save backup / Load backup (export, import) and Web MIDI
 # the site and firmware.json for the Firmware Hub (docs/FIRMWARE-JSON.md in fm1-base)
 tagline = "a rave groovebox whose sound system grows as you build the track"
 licence = "GPL-3.0-or-later"

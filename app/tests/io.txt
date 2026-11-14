@@ -63,3 +63,62 @@ expect view 4
 tap PLAY
 wait 50
 expect playing 0
+# ---- Phase 5: saving, rebooting, a backup and its restore, MIDI out
+# step 1 of track 1 (the demo's kick) off, then SAVE (stopped) and reboot: it stays off
+tap SEQ
+wait 30
+tapkey b0
+wait 30
+expect track 0
+expect step0 1
+tapkey w0
+wait 30
+expect step0 0
+tap SAVE
+wait 300
+expect store_writes >0
+reboot
+wait 900
+tapkey w5
+wait 50
+tap SEQ
+wait 30
+expect step0 0
+# a backup to a file; the step back on; the restore puts it off again
+backup out:project.stk
+tapkey w0
+wait 30
+expect step0 1
+restore out:project.stk
+wait 200
+expect restore_rc 0
+tap SEQ
+wait 30
+expect step0 0
+# track 1 on MIDI channel 1 (EDIT, last page, K4): its notes go out over USB; the clock too (GLOBAL 2, K2)
+tapkey w0
+wait 30
+tap EDIT
+tap EDIT
+tap EDIT
+tap EDIT
+wait 30
+turn K4 1
+wait 100
+tap GLO
+wait 30
+turn ALGO 1
+wait 50
+turn K2 1
+wait 100
+out
+tap PLAY
+wait 600
+expect_out USB 90 3C 78
+expect_out USB F8 00 00
+tap PLAY
+wait 50
+# MIDI in on channel 1 plays track 1
+midi 90 3C 64
+wait 30
+expect voices >0

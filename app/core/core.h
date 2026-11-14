@@ -17,7 +17,7 @@
 #define PPQN 96                  /* sequencer ticks per quarter note: a 16th is 24 */
 
 /* UI -> audio events: a single-producer / single-consumer ring, no locks (the UI writes head, the audio tail) */
-enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_ALL_OFF, EV_PLAY, EV_STOP };
+enum { EV_NOTE_ON = 1, EV_NOTE_OFF, EV_ALL_OFF, EV_PLAY, EV_STOP, EV_PATTERN };   /* EV_PATTERN: note = it */
 #define STK_EVQ_LEN 64u
 
 /* audio -> UI: every step that played (the stack's cones, the playhead's flash, the tests' timing checks) */
@@ -49,6 +49,46 @@ uint32_t core_loops(uint32_t track); /* completed loops of the track since PLAY 
 int core_trig_pop(trig_t *t);        /* 1 = one taken */
 uint32_t core_voices_active(void);   /* tracks whose voice is sounding */
 uint32_t core_peak(void);            /* output peak since the last call, Q15 */
+
+/* patterns (pattern.c) and where the sequencer is */
+int core_pattern(void);              /* the current pattern */
+int core_cue(void);                  /* the one coming at the boundary, -1 none */
+int core_song_row(void);
+void step_default(step_t *s);
+void bank_clear(bank_t *b);
+void locks_clear(plock_t *l);
+void pattern_swap_track(uint32_t t, uint32_t from, uint32_t to);
+void pattern_store_all(void);
+void pattern_load_current(void);
+void pattern_copy_out(bank_t *b);
+void pattern_copy_in(const bank_t *b);
+
+/* the project in bytes (project.c): one store object each; decode returns 0, or -1 for a bad or foreign object */
+#define PROJ_IO_MAX 3840u
+uint32_t proj_encode_settings(uint8_t *b);
+int proj_decode_settings(const uint8_t *b, uint32_t len);
+uint32_t proj_encode_kit(uint8_t *b);
+int proj_decode_kit(const uint8_t *b, uint32_t len);
+uint32_t proj_encode_pattern(uint32_t p, uint8_t *b);   /* from the bank: pattern_store_all() first */
+int proj_decode_pattern(uint32_t p, const uint8_t *b, uint32_t len);
+void pattern_switch_now(uint32_t to);
+uint32_t bank_ticks(const bank_t *b);
+uint32_t pattern_ticks(void);
+int bank_used(uint32_t p);
+int lock_get(uint32_t t, uint32_t step, uint32_t param);
+int lock_set(uint32_t t, uint32_t step, uint32_t param, uint32_t value);
+uint32_t lock_clear_step(uint32_t t, uint32_t step);
+int step_has_locks(uint32_t t, uint32_t step);
+extern const char *const SCALE_NAME[NSCALE_TYPES];
+int scale_has(int note);
+int scale_snap(int note);
+int scale_step(int note, int d);
+
+/* MIDI: the platform hands what comes in to core_midi_in (in the audio interrupt, before core_render) and sends what
+ * core_midi_pop gives (USB-MIDI event packets: cable/CIN, status, data 1, data 2) */
+void core_midi_in(uint32_t status, uint32_t d1, uint32_t d2);
+int core_midi_pop(uint32_t *pkt);
+uint32_t core_ext_bpm10(void);       /* the followed clock's tempo (tenths), 0 if none */
 
 /* the master bus (fx.c) */
 void fx_init(void);

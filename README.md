@@ -11,10 +11,10 @@ Every track you add brings a speaker cabinet to the on-screen sound system: subs
 tops on top.
 
 > ⚠️ **Beta / pre-alfa — instálalo bajo tu responsabilidad. Install at your own risk.**
-> Estado: **Fase 4**: secuenciador de 8 pistas, 36 sonidos de fábrica (percusión, bajos, leads, FM, pads con
-> acordes, efectos), delay dub, reverb, pump, compresor, filtro DJ y el sound system animado.
-> Status: **Phase 4**: 8-track sequencer, 36 factory sounds (drums, basses, leads, FM keys, chord pads, FX), dub delay,
-> reverb, pump, compressor, DJ filter and the animated sound system.
+> Estado: **Fase 5**: 16 patrones, cadena y canción, p-locks, escalas, MIDI por USB (notas, reloj, start/stop),
+> guardado en flash y exportar/importar el proyecto. 36 sonidos, FX globales y el sound system animado.
+> Status: **Phase 5**: 16 patterns, chain and song, parameter locks, scales, USB MIDI (notes, clock, start/stop),
+> saving to flash and project export/import. 36 sounds, master effects and the animated sound system.
 
 Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWARE.md)
 
@@ -36,9 +36,16 @@ Knobs: drag or mouse wheel. Shift-click or right-click holds a key or button dow
 | PLAY · REC | play-stop · arm live recording (KEYS mode, quantised) |
 | SEQ · EDIT · ENV · GLO · FX | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing (ALGO: scanlines) · master bus: delay, reverb, pump, comp, DJ filter |
 | LFO (KEYS mode, keys held) | store those notes as the track's chord memory (CHORD = MEMORY) |
+| LFO + a held step + knobs | parameter locks for that step (the EDIT page's params); + REC clears them |
+| ARP | patterns: white keys pick one (next bar while playing); hold ARP + keys to build a chain; K1 play mode; ALGO: the song |
+| SEL | scale and tonic for KEYS mode and the step NOTE knob |
+| SAVE | save the project (stop first); lit while something is unsaved |
 | HOME tap · HOME held | the sound system · SHIFT: +SEQ copy, +EDIT paste, +REC clear, +SAVE undo, +PLAY demo, +GLO help, +FX I/O test |
 | SELECT · PRESET · K1–K4 | track · sound preset · the page's parameters (sound system: K1 BPM, K2 swing, K3 DJ filter, K4 pump) |
 | OCT− / OCT+ | page (KEYS mode: octave) |
+
+Export / import: the emulator's backup buttons save the project to a file and put one back; on the FM-1 the same file
+goes over USB with fm1-base's backup page or `base/tools/fm1_backup.py`.
 
 ```bash
 make test                   # unit tests (core/ui) + the app in fm1-base's host simulator (PNG, WAV, checks)

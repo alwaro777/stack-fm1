@@ -289,7 +289,7 @@ static void step_edit(step_t *s, int page, int k, int d)
     if (!(s->flags & STEP_ON))                     /* editing a step turns it on */
         s->flags |= STEP_ON;
     if (page == 0) {
-        if (k == 0) s->note = (uint8_t)clampi(s->note + d, 0, 127);
+        if (k == 0) s->note = (uint8_t)(g_proj.scale ? scale_step(s->note, d) : clampi(s->note + d, 0, 127));
         else if (k == 1) s->vel = (uint8_t)clampi(s->vel + d, 1, 127);
         else if (k == 2) s->gate = (uint8_t)clampi(s->gate + d, 1, 64);
         else s->prob = (uint8_t)clampi(s->prob + d, 0, 100);
@@ -335,6 +335,26 @@ static void shift_action(uint32_t b)             /* SHIFT (HOME held) + a button
     char t[4] = "T";
     t[1] = (char)('1' + ui.track);
     t[2] = 0;
+    if (ui.view == VIEW_PATTERN && (b == UB_SEQ || b == UB_EDIT || b == UB_REC)) {
+        char pt[4] = "P";
+        ui_int(pt, g_proj.cur_pat + 1, sizeof pt);
+        if (b == UB_SEQ) {
+            pattern_copy_out(&ui.pclip);
+            ui.has_pclip = 1;
+            say("COPIED", pt);
+        } else if (b == UB_EDIT && ui.has_pclip) {
+            pattern_copy_in(&ui.pclip);
+            say("PASTED", pt);
+        } else if (b == UB_REC) {
+            bank_t empty;
+            bank_clear(&empty);
+            pattern_copy_in(&empty);
+            say("CLEARED", pt);
+        }
+        ui.shift_used = 1;
+        ui.dirty = 1;
+        return;
+    }
     switch (b) {
     case UB_SEQ:
         ui.clip = *cur();
@@ -389,6 +409,12 @@ static void button(uint32_t b)                   /* a press, SHIFT not held */
         core_post(core_playing() ? EV_STOP : EV_PLAY, 0, 0, 0);
         break;
     case UB_REC:
+        if (ui.held_step >= 0 && ((ui.prev.buttons >> UB_LFO) & 1u)) {   /* LFO + a step + REC: its locks go */
+            lock_clear_step((uint32_t)ui.track, (uint32_t)ui.held_step);
+            ui.held_edited = 1;
+            say("LOCKS", "CLEARED");
+            break;
+        }
         core_rec = !core_rec;
         say("REC", core_rec ? "ARMED" : "OFF");
         break;
@@ -431,11 +457,19 @@ static void button(uint32_t b)                   /* a press, SHIFT not held */
     case UB_LFO:
         if (ui.keys_mode && ui.prev.keys)
             chord_capture(ui.prev.keys);
-        else
-            say("P-LOCKS", "PHASE 5");
+        else if (ui.held_step < 0)
+            say("HOLD LFO + STEP", "KNOBS: LOCKS");
         break;
-    case UB_SEL: case UB_ARP: case UB_SAVE:
-        say("PHASE 5", "");                        /* scales, patterns, saving: coming */
+    case UB_SEL:
+        ui.view = VIEW_SCALE;
+        break;
+    case UB_ARP:                                  /* the patterns (held: build a chain on the keys) */
+        ui.view = VIEW_PATTERN;
+        ui.pat_page = 0;
+        ui.chain_started = 0;
+        break;
+    case UB_SAVE:
+        ui.req_save = 1;
         break;
     }
     ui.dirty = 1;
@@ -483,7 +517,10 @@ static void black_key(int k, int shift)
     ui.dirty = 1;
 }
 
-static int key_note(uint32_t k) { return clampi(53 + (int)k + 12 * ui.octave, 0, 127); }   /* key 0 = F3 */
+static int key_note(uint32_t k)                  /* key 0 = F3; kept to the scale */
+{
+    return scale_snap(clampi(53 + (int)k + 12 * ui.octave, 0, 127));
+}
 
 static void keys_input(const ui_input_t *in)
 {
@@ -513,9 +550,25 @@ static void keys_input(const ui_input_t *in)
                 black_key(b, shift);
             continue;
         }
-        /* a white key: a step of the page */
         if (w < 0)
             continue;
+        if (ui.view == VIEW_PATTERN) {             /* a white key: a pattern */
+            if (!(down >> k & 1u))
+                continue;
+            if ((in->buttons >> UB_ARP) & 1u) {    /* ARP held: the chain, in the order pressed */
+                if (!ui.chain_started) {
+                    g_proj.chain_len = 0;
+                    ui.chain_started = 1;
+                }
+                if (g_proj.chain_len < NCHAIN)
+                    g_proj.chain[g_proj.chain_len++] = (uint8_t)w;
+                g_proj.play_mode = PLAY_CHAIN;
+            } else {
+                core_post(EV_PATTERN, 0, (uint32_t)w, 0);
+            }
+            continue;
+        }
+        /* a white key: a step of the page */
         if (down >> k & 1u) {
             ui.held_step = ui.page * PAGE + w;
             ui.held_edited = 0;
@@ -549,8 +602,12 @@ static void knobs(const ui_input_t *in)
     }
     if (in->enc[UE_ALGO]) {
         int d = in->enc[UE_ALGO] > 0 ? 1 : -1;
-        if (ui.held_step >= 0)
+        if (ui.held_step >= 0 && ((in->buttons >> UB_LFO) & 1u))
+            ui.edit_page = (ui.edit_page + d + ui_npages(t)) % ui_npages(t);   /* the locks' page */
+        else if (ui.held_step >= 0)
             ui.step_page ^= 1;
+        else if (ui.view == VIEW_PATTERN)
+            ui.pat_page ^= 1;
         else if (ui.view == VIEW_GLOBAL)
             ui.glo_page ^= 1;
         else if (ui.view == VIEW_FX)
@@ -562,9 +619,45 @@ static void knobs(const ui_input_t *in)
         int d = accel(in->enc[UE_K1 + k]);
         if (!d)
             continue;
-        if (ui.held_step >= 0) {                   /* a held step: its fields */
+        if (ui.held_step >= 0 && ((in->buttons >> UB_LFO) & 1u)) {   /* LFO + a step: lock the page's params */
+            int id = ui_page_param(t, ui.edit_page, k), lo, hi, v;
+            if (id < NPARAMS) {
+                v = lock_get((uint32_t)ui.track, (uint32_t)ui.held_step, (uint32_t)id);
+                if (v < 0)
+                    v = ui_param_get(t, id, &lo, &hi);
+                else
+                    ui_param_get(t, id, &lo, &hi);
+                v = clampi(v + (hi < 20 ? (d > 0 ? 1 : -1) : d), lo, hi);
+                if (!lock_set((uint32_t)ui.track, (uint32_t)ui.held_step, (uint32_t)id, (uint32_t)v))
+                    say("LOCKS", "FULL");
+                t->step[ui.held_step].flags |= STEP_ON;
+            }
+            ui.held_edited = 1;
+        } else if (ui.held_step >= 0) {            /* a held step: its fields */
             step_edit(&t->step[ui.held_step], ui.step_page, k, d);
             ui.held_edited = 1;
+        } else if (ui.view == VIEW_PATTERN) {
+            if (ui.pat_page == 0) {
+                if (k == 0)
+                    g_proj.play_mode = (uint8_t)clampi(g_proj.play_mode + (d > 0 ? 1 : -1), PLAY_PATTERN, PLAY_SONG);
+            } else {
+                songrow_t *r = &g_proj.song[ui.song_cursor];
+                if (k == 0)
+                    ui.song_cursor = clampi(ui.song_cursor + (d > 0 ? 1 : -1), 0, NSONG - 1);
+                else if (k == 1)
+                    r->pat = (uint8_t)clampi(r->pat + (d > 0 ? 1 : -1), 0, NPATTERNS - 1);
+                else if (k == 2)
+                    r->reps = (uint8_t)clampi(r->reps + (d > 0 ? 1 : -1), 1, 16);
+                else
+                    g_proj.song_len = (uint8_t)clampi(g_proj.song_len + (d > 0 ? 1 : -1), 0, NSONG);
+                if (k && ui.song_cursor >= g_proj.song_len && k != 3)
+                    g_proj.song_len = (uint8_t)(ui.song_cursor + 1);
+            }
+        } else if (ui.view == VIEW_SCALE) {
+            if (k == 0)
+                g_proj.tonic = (uint8_t)((g_proj.tonic + (d > 0 ? 1 : 11)) % 12u);
+            else if (k == 1)
+                g_proj.scale = (uint8_t)clampi(g_proj.scale + d, 0, NSCALE_TYPES - 1);
         } else if (ui.view == VIEW_FX) {
             fx_turn(UI_FX_PAGE[ui.fx_page][k], d);
         } else if (ui.view == VIEW_STACK && k >= 2) {   /* the stack: K3 the DJ filter, K4 the pump */
@@ -576,6 +669,12 @@ static void knobs(const ui_input_t *in)
         } else if (ui.view == VIEW_GLOBAL && ui.glo_page == 1) {
             if (k == 0)
                 ui.scanlines = d > 0;
+            else if (k == 1)
+                g_proj.clk_out = d > 0;
+            else if (k == 2)
+                g_proj.clk_in = d > 0;
+            else
+                g_proj.transport = (uint8_t)clampi(g_proj.transport + (d > 0 ? 1 : -1), 0, 3);
         } else if (ui.view == VIEW_GLOBAL || ui.view == VIEW_STACK) {
             if (k == 0)
                 g_proj.bpm10 = (uint16_t)clampi(g_proj.bpm10 + d * 10, BPM_MIN, BPM_MAX);
@@ -738,12 +837,21 @@ int ui_frame(const ui_input_t *in, uint32_t now)
         ui.blink = now / 300u;
         ui.dirty = 1;
     }
+    if (ui.view == VIEW_PATTERN && core_cue() >= 0 && now / 150u != ui.blink) {   /* the cued pattern blinks */
+        ui.blink = now / 150u;
+        ui.dirty = 1;
+    }
     if (ui.msg_until && now >= ui.msg_until) {
         ui.msg_until = 0;
         ui.dirty = 1;
     }
     if (in->master / 41u != ui.prev.master / 41u)
         ui.dirty = 1;
+    if (core_pattern() != ui.shown_pat || core_cue() != ui.shown_cue) {
+        ui.shown_pat = core_pattern();
+        ui.shown_cue = core_cue();
+        ui.dirty = 1;
+    }
     if (core_playing() != ui.shown_play || core_rec != ui.shown_rec) {
         ui.shown_play = core_playing();
         ui.shown_rec = core_rec;
@@ -769,6 +877,17 @@ void ui_leds(ui_leds_t *out)
     }
     if (core_playing())
         out->buttons |= 1u << UB_PLAY;
+    if (ui.unsaved)
+        out->buttons |= 1u << UB_SAVE;
+    if (g_proj.play_mode != PLAY_PATTERN)
+        out->buttons |= 1u << UB_ARP;
+    if (ui.view == VIEW_PATTERN) {                 /* the patterns: the current one lit, the cued one blinking */
+        int c = core_cue();
+        out->keys = 1u << UI_WHITE[g_proj.cur_pat & 15u];
+        if (c >= 0 && ((ui.now / 150u) & 1u))
+            out->keys |= 1u << UI_WHITE[c & 15];
+        return;
+    }
     if (core_rec)
         out->buttons |= 1u << UB_REC;
     if (ui.keys_mode)
@@ -798,6 +917,21 @@ void ui_set_stats(uint32_t cpu_pct, uint32_t xruns)
         ui.xruns = xruns;
         if (ui.view == VIEW_IO || ui.view == VIEW_GLOBAL)
             ui.dirty = 1;
+    }
+}
+
+int ui_take_save(void)
+{
+    int r = ui.req_save;
+    ui.req_save = 0;
+    return r;
+}
+
+void ui_set_unsaved(int on)
+{
+    if (on != ui.unsaved) {
+        ui.unsaved = on;
+        ui.dirty = 1;
     }
 }
 

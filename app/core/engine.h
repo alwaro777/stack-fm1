@@ -102,9 +102,9 @@ void fm_render(pvoice_t *v, const track_t *t, int32_t *out, uint32_t n);
 
 /* the voice pool (voices.c) */
 void pool_init(void);
-void pool_note_on(uint32_t track, uint32_t note, uint32_t vel, uint32_t flags, int legato);
+void pool_note_on(uint32_t track, const track_t *t, uint32_t note, uint32_t vel, uint32_t flags, int legato);
 void pool_note_off(uint32_t track, uint32_t note);   /* note 255: every note of the track */
-int pool_render(uint32_t track, int32_t *out, uint32_t n);   /* 1 if a voice of the track sounded */
+int pool_render(uint32_t track, const track_t *t, int32_t *out, uint32_t n);   /* 1 if a voice sounded */
 uint32_t pool_active(uint32_t track);
 extern pool_t g_pool[NPOOL];
 /* the chord a note becomes on a track: intervals, n of them (1..4) */

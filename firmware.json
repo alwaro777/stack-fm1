@@ -10,7 +10,7 @@
   "hardware": {
     "models": ["FM-1"],
     "flash": ["856014", "B36014"],
-    "features": ["usb-audio-in", "usb-audio-out", "screen-reader"]
+    "features": ["usb-audio-in", "usb-audio-out", "screen-reader", "backup"]
   },
   "credits": "Built on fm1-base and felucca-bsp (MPL-2.0)."
 }

@@ -11,11 +11,29 @@
 #define APP_SPLASH                       /* our flyer instead of the platform's name screen */
 void app_splash(void);
 
-/* the store: the app's objects (settings from Phase 5) and the platform's panel calibration, and their flash
- * offsets (two 4 KiB sectors each). OBJ_PANEL keeps fm1-base's template offset, so a calibration survives moving
- * between fm1-base firmwares. */
-enum { OBJ_SETTINGS, OBJ_PANEL, OBJ_NOBJ };
-#define APP_STORE_MAP {0xFC000u, 0xDC000u}
+/* the store: the project as objects (core/project.c: the settings, the kit, the 16 patterns) and the platform's
+ * panel calibration, with their flash offsets (two 4 KiB sectors each, A/B, CRC, torn-write safe). OBJ_PANEL keeps
+ * fm1-base's template offset, so a calibration survives moving between fm1-base firmwares; the kit and the patterns
+ * sit at the bottom of the data area (0x97000 .. 0xB9000), clear of the panel's pair at 0xDC000. */
+enum { OBJ_SETTINGS, OBJ_PANEL, OBJ_KIT, OBJ_PAT0, OBJ_NOBJ = OBJ_PAT0 + 16 };
+#define APP_STORE_MAP {0xFC000u, 0xDC000u, 0x97000u, \
+    0x99000u, 0x9B000u, 0x9D000u, 0x9F000u, 0xA1000u, 0xA3000u, 0xA5000u, 0xA7000u, \
+    0xA9000u, 0xAB000u, 0xAD000u, 0xAF000u, 0xB1000u, 0xB3000u, 0xB5000u, 0xB7000u}
+
+/* backup and restore over USB, and the emulator's Save backup / Load backup (fm1.toml backup = true): the project's
+ * objects, all or nothing */
+#define APP_BACKUP_OBJS {OBJ_SETTINGS, OBJ_KIT, OBJ_PAT0, OBJ_PAT0 + 1, OBJ_PAT0 + 2, OBJ_PAT0 + 3, OBJ_PAT0 + 4, \
+    OBJ_PAT0 + 5, OBJ_PAT0 + 6, OBJ_PAT0 + 7, OBJ_PAT0 + 8, OBJ_PAT0 + 9, OBJ_PAT0 + 10, OBJ_PAT0 + 11, \
+    OBJ_PAT0 + 12, OBJ_PAT0 + 13, OBJ_PAT0 + 14, OBJ_PAT0 + 15}
+#define APP_BACKUP_MAGIC 0x314B5453u        /* "STK1" */
+#define APP_BACKUP_VERSION 1u
+#define APP_BACKUP_WHAT "replaces the whole project"
+#define APP_BACKUP_BUF stk_io
+extern uint8_t stk_io[];
+int app_backup_playing(void);
+void app_backup_flush(void);
+void app_backup_hold(int on);
+void app_backup_restored(void);
 
 /* the contract: the platform calls these */
 void app_init(void);                     /* boot: the engine */

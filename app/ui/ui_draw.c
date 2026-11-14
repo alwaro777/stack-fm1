@@ -10,6 +10,26 @@ static int lamp(uint32_t t)                     /* 1 while track t's last hit is
     return ui.flash_t[t] != 0;
 }
 
+void ui_pattern_text(char *d, uint32_t cap)
+{
+    int c = core_cue();
+    d[0] = 0;
+    ui_cat(d, "P", cap);
+    if (g_proj.cur_pat < 9)
+        ui_cat(d, "0", cap);
+    ui_int(d, g_proj.cur_pat + 1, cap);
+    if (c >= 0 && c != g_proj.cur_pat) {
+        ui_cat(d, ">", cap);
+        if (c < 9)
+            ui_cat(d, "0", cap);
+        ui_int(d, c + 1, cap);
+    }
+    if (g_proj.play_mode == PLAY_CHAIN)
+        ui_cat(d, " CHAIN", cap);
+    else if (g_proj.play_mode == PLAY_SONG)
+        ui_cat(d, " SONG", cap);
+}
+
 void ui_header(const char *left)
 {
     char t[24];
@@ -17,9 +37,14 @@ void ui_header(const char *left)
     fb_rect(0, 0, FB_W, 12, P_ORANGE);
     fb_text(3, 3, left, P_BLACK, 1);
     t[0] = 0;
-    ui_int(t, g_proj.bpm10 / 10, sizeof t);
-    ui_cat(t, ".", sizeof t);
-    ui_int(t, g_proj.bpm10 % 10, sizeof t);
+    {
+        uint32_t b = core_ext_bpm10() ? core_ext_bpm10() : g_proj.bpm10;
+        if (core_ext_bpm10())
+            ui_cat(t, "EXT ", sizeof t);
+        ui_int(t, (int32_t)(b / 10u), sizeof t);
+        ui_cat(t, ".", sizeof t);
+        ui_int(t, (int32_t)(b % 10u), sizeof t);
+    }
     x = FB_W - 3 - 16 - fb_text_w(t, 1);
     fb_text(x, 3, t, P_BLACK, 1);
     if (core_playing()) {                          /* play: a triangle */
@@ -61,6 +86,23 @@ static void knob_row(int32_t y, const track_t *t)
 {
     char val[16];
     int k;
+    if (ui.held_step >= 0 && ((ui.prev.buttons >> UB_LFO) & 1u)) {   /* locking: the page's params, locked lit */
+        for (k = 0; k < 4; k++) {
+            int id = ui_page_param(t, ui.edit_page, k), lo, hi, v = ui_param_get(t, id, &lo, &hi);
+            int lv = id < NPARAMS ? lock_get((uint32_t)ui.track, (uint32_t)ui.held_step, (uint32_t)id) : -1;
+            track_t tmp;
+            if (lv >= 0) {
+                tmp = *t;
+                tmp.p[id] = (uint8_t)lv;
+                v = lv;
+                ui_param_text(&tmp, id, val, sizeof val);
+            } else {
+                ui_param_text(t, id, val, sizeof val);
+            }
+            knob_box(4 + k * 59, y, 55, ui_param_name(t, id), val, v, lo, hi, lv >= 0);
+        }
+        return;
+    }
     if (ui.held_step >= 0) {
         const step_t *s = &t->step[ui.held_step];
         static const int16_t HI[2][4] = {{127, 127, 64, 100}, {4, 11, NCONDS - 1, 3}};
@@ -85,7 +127,7 @@ static void knob_row(int32_t y, const track_t *t)
 
 /* one step cell: on / off, velocity, accent, slide, probability, ratchets, condition, nudge */
 static void step_cell(int32_t x, int32_t y, int32_t w, int32_t h, const step_t *s, int beat, int play, int held,
-                      int muted)
+                      int muted, int locks)
 {
     uint8_t face = muted ? P_GRAY : P_ORANGE;
     if (!(s->flags & STEP_ON)) {
@@ -112,6 +154,8 @@ static void step_cell(int32_t x, int32_t y, int32_t w, int32_t h, const step_t *
         if (s->micro)
             fb_vline(x + w / 2 + s->micro * (w / 2 - 1) / 11, y + h - 3, 3, P_CYAN);
     }
+    if (locks && (s->flags & STEP_ON))             /* parameter locks: a white corner */
+        fb_rect(x, y + h - 4, 4, 4, P_WHITE);
     if (play)
         fb_frame(x - 1, y - 1, w + 2, h + 2, P_WHITE);
     if (held)
@@ -197,7 +241,8 @@ static void draw_seq(void)
             fb_dither(x, 28, 13, 34, P_NIGHT, P_DGRAY, 4);
             continue;
         }
-        step_cell(x, 28, 13, 34, &t->step[st], !(i & 3), st == play, st == ui.held_step, muted);
+        step_cell(x, 28, 13, 34, &t->step[st], !(i & 3), st == play, st == ui.held_step, muted,
+                  step_has_locks((uint32_t)ui.track, (uint32_t)st));
     }
     /* pages: which one is shown, where the playhead is */
     for (i = 0; i < 4; i++) {
@@ -247,7 +292,8 @@ static void draw_seq(void)
         s[0] = 0;
         ui_cat(s, "STEP ", sizeof s);
         ui_int(s, ui.held_step + 1, sizeof s);
-        ui_cat(s, ui.step_page ? "  ALGO: NOTE..." : "  ALGO: RATCHET...", sizeof s);
+        ui_cat(s, (ui.prev.buttons >> UB_LFO) & 1u ? "  P-LOCKS" : ui.step_page ? "  ALGO: NOTE..." : "  ALGO: RATCHET...",
+               sizeof s);
         fb_text(4, 206, s, P_LIME, 1);
     } else {
         s[0] = 0;
@@ -296,7 +342,8 @@ static void draw_edit(void)
     for (i = 0; i < PAGE; i++) {
         int st = ui.page * PAGE + i;
         if (st < t->len)
-            step_cell(8 + i * 14, 126, 13, 22, &t->step[st], !(i & 3), st == play, 0, 0);
+            step_cell(8 + i * 14, 126, 13, 22, &t->step[st], !(i & 3), st == play, 0, 0,
+                      step_has_locks((uint32_t)ui.track, (uint32_t)st));
     }
     lamp((uint32_t)ui.track) ? fb_disc(120, 176, 14, P_YELLOW) : fb_ring(120, 176, 14, P_DGRAY);
     footer("ALGO/EDIT: PAGE  PRESET: SOUND");
@@ -308,10 +355,15 @@ static void draw_global(void)
     char a[16], b[16], c[16], d[16];
     fb_clear(P_NIGHT);
     ui_header(ui.glo_page ? "GLOBAL 2/2" : "GLOBAL 1/2");
-    if (ui.glo_page) {                             /* the look */
+    if (ui.glo_page) {                             /* the look and MIDI */
+        static const char *const TR[4] = {"OFF", "SEND", "OBEY", "BOTH"};
         knob_box(4, 30, 55, "SCANLINES", ui.scanlines ? "ON" : "OFF", ui.scanlines, 0, 1, 0);
-        fb_text(4, 84, "SCANLINES: THE STACK SEEN", P_GRAY, 1);
-        fb_text(4, 94, "THROUGH AN OLD TV.", P_GRAY, 1);
+        knob_box(63, 30, 55, "CLOCK OUT", g_proj.clk_out ? "ON" : "OFF", g_proj.clk_out, 0, 1, 0);
+        knob_box(122, 30, 55, "CLOCK IN", g_proj.clk_in ? "EXT" : "INT", g_proj.clk_in, 0, 1, 0);
+        knob_box(181, 30, 55, "START/STOP", TR[g_proj.transport & 3u], g_proj.transport, 0, 3, 0);
+        fb_text(4, 84, "MIDI OVER USB. EACH TRACK SENDS", P_GRAY, 1);
+        fb_text(4, 94, "AND HEARS ON ITS MIDI CH (EDIT,", P_GRAY, 1);
+        fb_text(4, 104, "LAST PAGE).", P_GRAY, 1);
         footer("ALGO: PAGE 1");
         return;
     }
@@ -381,7 +433,11 @@ static void draw_stack(uint32_t now)
     stack_draw(now);
     if (ui.scanlines)
         fb_scanlines(12, 214);
-    ui_header("P01");
+    {
+        char pt[20];
+        ui_pattern_text(pt, sizeof pt);
+        ui_header(pt);
+    }
     ui_steps_bar(214);
 }
 
@@ -419,6 +475,104 @@ static void draw_fx(void)
     footer("FX/ALGO: PAGE   STACK K3 DJ, K4 PUMP");
 }
 
+/* ---------------------------------------------------------- PATTERNS --- */
+static void draw_pattern(void)
+{
+    static const char *const MODE[3] = {"PATTERN", "CHAIN", "SONG"};
+    char t[24], h[24];
+    int i, c = core_cue();
+    fb_clear(P_NIGHT);
+    ui_pattern_text(h, sizeof h);
+    if (ui.pat_page == 0) {
+        ui_header(h);
+        for (i = 0; i < NPATTERNS; i++) {                 /* 4 x 4: used, current, cued, in the chain */
+            int32_t x = 6 + (i % 4) * 58, y = 18 + (i / 4) * 34;
+            int used = bank_used((uint32_t)i), k;
+            uint8_t bg = i == g_proj.cur_pat ? P_ORANGE : used ? P_DORANGE : P_BLACK;
+            fb_rect(x, y, 54, 30, bg);
+            fb_frame(x, y, 54, 30, i == c && ((ui.now / 150u) & 1u) ? P_YELLOW : P_DGRAY);
+            t[0] = 0;
+            ui_cat(t, "P", sizeof t);
+            if (i < 9)
+                ui_cat(t, "0", sizeof t);
+            ui_int(t, i + 1, sizeof t);
+            fb_text(x + 4, y + 4, t, i == g_proj.cur_pat ? P_BLACK : used ? P_WHITE : P_GRAY, 1);
+            for (k = 0; k < g_proj.chain_len; k++)        /* its places in the chain */
+                if (g_proj.chain[k] == i)
+                    fb_rect(x + 4 + k * 3, y + 22, 2, 4, P_LIME);
+        }
+        t[0] = 0;
+        ui_cat(t, "MODE ", sizeof t);
+        ui_cat(t, MODE[g_proj.play_mode % 3], sizeof t);
+        fb_text(6, 158, t, P_YELLOW, 1);
+        fb_text(6, 172, "KEYS 1-16: PATTERN (NEXT BAR)", P_GRAY, 1);
+        fb_text(6, 182, "HOLD ARP + KEYS: A CHAIN", P_GRAY, 1);
+        fb_text(6, 192, "K1 MODE  ALGO: THE SONG", P_GRAY, 1);
+        fb_text(6, 202, "HOME+SEQ/EDIT/REC: COPY PASTE CLR", P_GRAY, 1);
+        footer("ALGO: THE SONG PAGE");
+        return;
+    }
+    ui_header("SONG");
+    for (i = 0; i < 12; i++) {                            /* the rows around the cursor */
+        int r = ui.song_cursor - 5 + i;
+        int32_t y = 16 + i * 13;
+        if (r < 0 || r >= NSONG)
+            continue;
+        if (r == ui.song_cursor)
+            fb_rect(0, y - 2, FB_W, 12, P_PURPLE);
+        t[0] = 0;
+        if (r < 9)
+            ui_cat(t, "0", sizeof t);
+        ui_int(t, r + 1, sizeof t);
+        if (r < g_proj.song_len) {
+            ui_cat(t, "  P", sizeof t);
+            if (g_proj.song[r].pat < 9)
+                ui_cat(t, "0", sizeof t);
+            ui_int(t, g_proj.song[r].pat + 1, sizeof t);
+            ui_cat(t, "  X", sizeof t);
+            ui_int(t, g_proj.song[r].reps, sizeof t);
+            if (core_playing() && g_proj.play_mode == PLAY_SONG && r == core_song_row())
+                ui_cat(t, "  <", sizeof t);
+        } else {
+            ui_cat(t, "  --", sizeof t);
+        }
+        fb_text(8, y, t, r < g_proj.song_len ? P_WHITE : P_DGRAY, 1);
+    }
+    t[0] = 0;
+    ui_cat(t, "LENGTH ", sizeof t);
+    ui_int(t, g_proj.song_len, sizeof t);
+    fb_text(150, 18, t, P_LGRAY, 1);
+    fb_text(150, 32, "K1 ROW", P_GRAY, 1);
+    fb_text(150, 42, "K2 PATTERN", P_GRAY, 1);
+    fb_text(150, 52, "K3 REPEATS", P_GRAY, 1);
+    fb_text(150, 62, "K4 LENGTH", P_GRAY, 1);
+    footer(g_proj.play_mode == PLAY_SONG ? "SONG MODE ON" : "PATTERNS: K1 MODE = SONG");
+}
+
+static void draw_scale(void)
+{
+    static const char *const N[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    static const uint8_t BK_AFTER[11] = {0, 1, 2, 4, 5, 7, 8, 9, 11, 12, 14};
+    int i;
+    fb_clear(P_NIGHT);
+    ui_header("SCALE");
+    knob_box(4, 30, 55, "TONIC", N[g_proj.tonic % 12], g_proj.tonic, 0, 11, 0);
+    knob_box(63, 30, 114, "SCALE", SCALE_NAME[g_proj.scale % NSCALE_TYPES], g_proj.scale, 0, NSCALE_TYPES - 1, 0);
+    for (i = 0; i < 16; i++) {                            /* the keyboard (F3 up): the scale's notes lit */
+        int note = 53 + UI_WHITE[i];
+        fb_rect(8 + i * 14, 100, 13, 50, scale_has(note) ? (((note - g_proj.tonic) % 12 + 12) % 12 == 0 ? P_YELLOW
+                                                                                                   : P_ORANGE)
+                                                         : P_DGRAY);
+    }
+    for (i = 0; i < 11; i++) {
+        int note = 53 + UI_BLACK[i];
+        fb_rect(8 + BK_AFTER[i] * 14 + 9, 100, 9, 30, scale_has(note) ? P_LORANGE : P_BLACK);
+    }
+    fb_text(4, 160, "KEYS MODE AND THE STEP NOTE KNOB", P_GRAY, 1);
+    fb_text(4, 170, "KEEP TO THIS SCALE.", P_GRAY, 1);
+    footer("K1 TONIC  K2 SCALE");
+}
+
 /* ------------------------------------------------------------- HELP --- */
 static void draw_help(void)
 {
@@ -428,12 +582,12 @@ static void draw_help(void)
         "BLACK 9/10   PAGE / FILL (HOLD)",
         "BLACK 11     KEYS MODE (SEQ: BACK)",
         "PLAY  REC    PLAY-STOP / LIVE REC",
-        "SEQ EDIT ENV GLO FX  VIEWS",
+        "SEQ EDIT ENV GLO FX ARP SEL  VIEWS",
         "HOME (TAP)   THE SOUND SYSTEM",
-        "OCT- OCT+    PAGE / OCTAVE",
+        "OCT- OCT+    PAGE / OCTAVE   SAVE",
         "SELECT       TRACK",
         "ALGO         KNOB PAGE",
-        "PRESET       SOUND   KEYS+LFO: CHORD",
+        "PRESET SOUND  LFO+STEP+KNOB: LOCK",
         "HOME HELD = SHIFT, THEN:",
         "SEQ COPY  EDIT PASTE  REC CLEAR",
         "SAVE UNDO  PLAY DEMO  FX I/O TEST",
@@ -520,6 +674,8 @@ void ui_draw(uint32_t now)
     case VIEW_HELP: draw_help(); break;
     case VIEW_IO: draw_io(); break;
     case VIEW_FX: draw_fx(); break;
+    case VIEW_PATTERN: draw_pattern(); break;
+    case VIEW_SCALE: draw_scale(); break;
     default: draw_seq(); break;
     }
 }

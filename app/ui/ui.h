@@ -28,7 +28,8 @@ typedef struct {                 /* what the UI asks of the panel's lights */
 } ui_leds_t;
 
 /* VIEW_STACK: the sound system, the main screen */
-enum { VIEW_SPLASH, VIEW_SEQ, VIEW_EDIT, VIEW_GLOBAL, VIEW_STACK, VIEW_HELP, VIEW_IO, VIEW_FX };
+enum { VIEW_SPLASH, VIEW_SEQ, VIEW_EDIT, VIEW_GLOBAL, VIEW_STACK, VIEW_HELP, VIEW_IO, VIEW_FX, VIEW_PATTERN,
+       VIEW_SCALE };
 
 void ui_init(void);
 /* one UI frame: input, then a redraw into fb when something changed. now in ms. Returns 1 if fb changed. */
@@ -39,6 +40,9 @@ int ui_track(void);              /* the selected track */
 int ui_keys_mode(void);
 void ui_set_stats(uint32_t cpu_pct, uint32_t xruns);
 void ui_say(const char *a, const char *b);   /* a short message from the platform ("SAVED", errors) */
+int ui_take_save(void);          /* 1 once after SAVE was pressed: the platform saves (and says how it went) */
+void ui_set_unsaved(int on);     /* the platform's word: something is not saved (SAVE lights up) */
+void ui_int(char *d, int32_t v, uint32_t cap);   /* append a number to a string */
 void ui_draw_splash(uint32_t t); /* the flyer at time t (ms): also APP_SPLASH's, before the main loop runs */
 
 /* a speaker cabinet (the stack's building block): kind 0 = SUB (one big cone), 1 = MID (horn), 2 = TOP (tweeters).

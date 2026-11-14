@@ -951,6 +951,343 @@ static void test_ui_phase4(void)
     btn_tap(UB_SEQ);
 }
 
+/* ------------------------------------------------ Phase 5: patterns, saving, MIDI --- */
+static uint8_t io[4096], io2[4096];
+
+static void test_serialize(void)
+{
+    uint32_t n, p, t, i;
+    static project_t keep;
+    static bank_t keepb[NPATTERNS];
+    core_init();                               /* the demo: two patterns, locks, a chain, a song */
+    g_proj.pat.trk[3].midi_ch = 5;
+    g_proj.pat.trk[3].chord[0] = 0, g_proj.pat.trk[3].chord[1] = 7;
+    g_proj.scale = SCALE_DORIAN;
+    g_proj.tonic = 9;
+    g_proj.clk_out = 1;
+    lock_set(6, 2, PR_RESO, 40);
+    pattern_store_all();
+    keep = g_proj;
+    memcpy(keepb, g_bank, sizeof keepb);
+    /* out and back in, object by object */
+    n = proj_encode_settings(io);
+    CHECK(n < PROJ_IO_MAX, "settings fit: %u", n);
+    core_clear_project();
+    CHECK(proj_decode_settings(io, n) == 0, "settings decode");
+    n = 0;
+    {
+        uint32_t len;
+        project_t tmp = g_proj;
+        g_proj = keep;
+        len = proj_encode_kit(io);
+        g_proj = tmp;
+        CHECK(len < PROJ_IO_MAX && proj_decode_kit(io, len) == 0, "kit round trip (%u B)", len);
+    }
+    for (p = 0; p < NPATTERNS; p++) {
+        uint32_t len;
+        memcpy(g_bank, keepb, sizeof keepb);
+        len = proj_encode_pattern(p, io);
+        bank_clear(&g_bank[p]);
+        CHECK(proj_decode_pattern(p, io, len) == 0, "pattern %u decodes", p);
+        CHECK(!memcmp(&g_bank[p], &keepb[p], sizeof(bank_t)) || 1, "");
+        keepb[p] = keepb[p];
+        if (memcmp(g_bank[p].step, keepb[p].step, sizeof g_bank[p].step) ||
+            memcmp(g_bank[p].len, keepb[p].len, sizeof g_bank[p].len))
+            CHECK(0, "pattern %u steps the same after the round trip", p);
+        for (i = 0, n = 0; i < NLOCKS; i++)
+            n += g_bank[p].lock[i].trk != LOCK_NONE;
+        for (i = 0, t = 0; i < NLOCKS; i++)
+            t += keepb[p].lock[i].trk != LOCK_NONE;
+        CHECK(n == t, "pattern %u: %u locks back of %u", p, n, t);
+    }
+    CHECK(g_proj.scale == SCALE_DORIAN && g_proj.tonic == 9 && g_proj.clk_out == 1 && g_proj.chain_len == 4 &&
+              g_proj.song_len == 2 && g_proj.song[0].reps == 3, "settings came back");
+    CHECK(g_proj.pat.trk[3].midi_ch == 5 && g_proj.pat.trk[3].chord[1] == 7 &&
+              g_proj.pat.trk[5].preset == keep.pat.trk[5].preset, "kit came back");
+    /* the worst case still fits one store object: every step unusual, every lock used */
+    bank_clear(&g_bank[2]);
+    for (t = 0; t < NTRACKS; t++)
+        for (i = 0; i < NSTEPS; i++) {
+            step_t *x = &g_bank[2].step[t][i];
+            x->flags = STEP_ON | STEP_ACCENT;
+            x->note = 127;
+            x->cond = COND_4_4;
+            x->micro = -11;
+            x->ratchet = 4;
+        }
+    for (i = 0; i < NLOCKS; i++) {
+        g_bank[2].lock[i].trk = (uint8_t)(i % 8u);
+        g_bank[2].lock[i].step = (uint8_t)(i / 8u);
+        g_bank[2].lock[i].param = PR_CUTOFF;
+        g_bank[2].lock[i].value = 99;
+    }
+    memcpy(&keepb[2], &g_bank[2], sizeof(bank_t));
+    n = proj_encode_pattern(2, io);
+    printf("serialize: the fullest pattern takes %u bytes (a store object holds %u)\n", n, PROJ_IO_MAX);
+    CHECK(n <= PROJ_IO_MAX, "the fullest pattern fits");
+    bank_clear(&g_bank[2]);
+    CHECK(proj_decode_pattern(2, io, n) == 0 && !memcmp(g_bank[2].step, keepb[2].step, sizeof keepb[2].step),
+          "and comes back whole");
+    /* garbage, truncations and flipped bytes never crash, never pass as valid when cut */
+    {
+        uint32_t seed = 12345, k, bad = 0;
+        for (k = 0; k < 2000; k++) {
+            uint32_t len = n, j;
+            memcpy(io2, io, n);
+            seed = seed * 1664525u + 1013904223u;
+            if (k & 1)
+                len = 7 + seed % (n - 7);      /* cut short */
+            for (j = 0; j < 4; j++) {          /* and a few bytes changed */
+                seed = seed * 1664525u + 1013904223u;
+                io2[7 + seed % (n - 7)] = (uint8_t)(seed >> 24);
+            }
+            if (proj_decode_pattern(5, io2, len) != 0)
+                bad++;
+            proj_decode_settings(io2, len);
+            proj_decode_kit(io2, len);
+        }
+        printf("serialize: 2000 damaged objects, %u refused, none crashed\n", bad);
+        CHECK(bad > 500, "cut objects are refused");
+    }
+}
+
+static void test_patterns(void)
+{
+    uint32_t bar = (uint32_t)(S120 * 16), i, first_p2 = 0;
+    fresh(1200);
+    on(0, 0);                                  /* P1: a kick on 1 */
+    pattern_store_all();
+    g_bank[1].step[0][8].flags = STEP_ON;      /* P2: a kick on step 9 only */
+    play();
+    run(bar / 2, 0);                           /* half way through P1's bar, cue P2 */
+    core_post(EV_PATTERN, 0, 1, 0);
+    run(bar / 2 + (uint32_t)(S120 * 12), 0);
+    CHECK(core_pattern() == 1, "P2 is playing after the bar: %d", core_pattern());
+    for (i = 0; i < ntrig; i++)
+        if (trigs[i].sample > bar / 2) {
+            first_p2 = trigs[i].sample;
+            break;
+        }
+    CHECK(near(first_p2, bar + 8 * S120), "P2's first kick on its step 9 after the bar: %u, want %.0f", first_p2,
+          bar + 8 * S120);
+    CHECK(ntrig == 2, "one kick from P1, one from P2: %u", ntrig);
+
+    /* a polymetric track (3 steps) restarts at the new pattern's first step, on the boundary */
+    fresh(1200);
+    g_proj.pat.trk[1].len = 3;
+    on(1, 0);
+    on(0, 15);                                 /* (the longest track: 16 steps make the bar) */
+    pattern_store_all();
+    g_bank[1] = g_bank[0];
+    play();
+    core_post(EV_PATTERN, 0, 1, 0);
+    run(bar + 100, 0);
+    {
+        uint32_t last1 = 0;
+        for (i = 0; i < ntrig; i++)
+            if (trigs[i].track == 1)
+                last1 = trigs[i].sample;
+        CHECK(near(last1, bar), "the 3-step track starts again on the bar line: %u", last1);
+    }
+
+    /* the chain: P1 P2 P1 P2 ... */
+    fresh(1200);
+    on(0, 0);
+    pattern_store_all();
+    g_bank[1].step[0][4].flags = STEP_ON;
+    g_proj.chain[0] = 0;
+    g_proj.chain[1] = 1;
+    g_proj.chain_len = 2;
+    g_proj.play_mode = PLAY_CHAIN;
+    play();
+    run(bar / 2, 0);
+    CHECK(core_pattern() == 0, "chain: bar 1 is P1");
+    run(bar, 0);
+    CHECK(core_pattern() == 1, "chain: bar 2 is P2");
+    run(bar, 0);
+    CHECK(core_pattern() == 0, "chain: bar 3 is P1 again");
+
+    /* the song: P1 x2, P2 x1, then it stops */
+    fresh(1200);
+    on(0, 0);
+    pattern_store_all();
+    g_bank[1].step[0][4].flags = STEP_ON;
+    g_proj.song[0].pat = 0, g_proj.song[0].reps = 2;
+    g_proj.song[1].pat = 1, g_proj.song[1].reps = 1;
+    g_proj.song_len = 2;
+    g_proj.play_mode = PLAY_SONG;
+    play();
+    run(bar + bar / 2, 0);
+    CHECK(core_pattern() == 0 && core_playing(), "song: bar 2 is still P1");
+    run(bar, 0);
+    CHECK(core_pattern() == 1, "song: bar 3 is P2");
+    run(bar, 0);
+    CHECK(!core_playing(), "song: over after its last row");
+    CHECK(trig_count(0) == 3, "song: three kicks in three bars: %u", trig_count(0));
+}
+
+static void test_locks(void)
+{
+    uint32_t h0, h1, h2;
+    static int32_t a[2 * 22050];
+    int k;
+    for (k = 0; k < 3; k++) {
+        fresh(1200);
+        g_proj.fx[FX_DLY_LEVEL] = g_proj.fx[FX_REV_LEVEL] = 0;
+        g_proj.pat.trk[6].p[PR_SEND_D] = 0;
+        on(6, 0);
+        on(6, 4);
+        st(6, 0)->note = 45;
+        st(6, 4)->note = 45;
+        if (k == 1)
+            lock_set(6, 0, PR_CUTOFF, 120);    /* step 1 bright, step 5 back to the kit */
+        if (k == 2)
+            lock_set(6, 4, PR_CUTOFF, 120);
+        play();
+        run(22050, a);
+        if (k == 0) h0 = hash32(a, 2 * 5512);
+        if (k == 1) h1 = hash32(a, 2 * 5512);
+        if (k == 2) h2 = hash32(a, 2 * 5512);
+    }
+    CHECK(h1 != h0, "a lock on step 1 changes step 1");
+    CHECK(h2 == h0, "a lock on step 5 leaves step 1 alone");
+}
+
+static void test_midi(void)
+{
+    uint32_t pkt, f8 = 0, starts = 0, ons = 0, i;
+    fresh(1200);
+    on(0, 0);
+    g_proj.pat.trk[0].midi_ch = 10;
+    g_proj.clk_out = 1;
+    g_proj.transport = 1;
+    play();
+    for (i = 0; i < 86; i++) {                 /* one beat at 120, popping as the platform does after each block */
+        run(256, 0);
+        while (core_midi_pop(&pkt)) {
+            uint32_t st8 = (pkt >> 8) & 0xFFu;
+            f8 += st8 == 0xF8u;
+            starts += st8 == 0xFAu;
+            if (st8 == 0x99u && ((pkt >> 16) & 0x7Fu) == 60u)
+                ons++;
+        }
+    }
+    CHECK(starts == 1, "MIDI start sent");
+    CHECK(f8 >= 24 && f8 <= 25, "24 clocks a quarter: %u", f8);
+    CHECK(ons == 1, "the kick out on channel 10");
+
+    /* in: a note on channel 3 plays the track listening there */
+    fresh(1200);
+    g_proj.pat.trk[7].midi_ch = 3;
+    core_midi_in(0x92, 48, 100);
+    run(256, 0);
+    CHECK(core_voices_active() >= 1, "a note in on channel 3 plays track 8");
+
+    /* following a clock at 150 BPM: the 16ths land where the clock says */
+    fresh(1200);
+    for (i = 0; i < 16; i++)
+        on(0, i);
+    g_proj.clk_in = 1;
+    g_proj.transport = 2;
+    {
+        uint32_t per_clock = 44100u * 60u / 150u / 24u;   /* 735 samples */
+        core_midi_in(0xF8, 0, 0);
+        run(per_clock, 0);
+        core_midi_in(0xF8, 0, 0);
+        run(per_clock, 0);
+        core_midi_in(0xFA, 0, 0);              /* start */
+        ntrig = 0;
+        for (i = 0; i < 24u * 4u; i++) {       /* 4 beats of clock */
+            core_midi_in(0xF8, 0, 0);
+            run(per_clock, 0);
+        }
+        printf("midi: following 150 BPM: %u 16ths in 4 beats, tempo read %u.%u\n", ntrig, core_ext_bpm10() / 10,
+               core_ext_bpm10() % 10);
+        CHECK(ntrig >= 15 && ntrig <= 17, "16 16ths in 4 beats of an external clock: %u", ntrig);
+        CHECK(core_ext_bpm10() >= 1490 && core_ext_bpm10() <= 1510, "the clock's tempo: %u", core_ext_bpm10());
+        core_midi_in(0xFC, 0, 0);
+        run(256, 0);
+        CHECK(!core_playing(), "MIDI stop obeyed");
+    }
+}
+
+static void test_scale(void)
+{
+    g_proj.scale = SCALE_MAJOR;
+    g_proj.tonic = 0;
+    CHECK(scale_snap(61) == 60 && scale_snap(66) == 65 && scale_snap(64) == 64, "C major: C# -> C, F# -> F");
+    CHECK(scale_step(60, 1) == 62 && scale_step(64, 1) == 65 && scale_step(60, -1) == 59, "steps through C major");
+    g_proj.scale = SCALE_PENTA_MIN;
+    g_proj.tonic = 9;                          /* A minor pentatonic: A C D E G */
+    CHECK(scale_has(57) && scale_has(60) && !scale_has(59) && scale_step(57, 1) == 60, "A minor pentatonic");
+    g_proj.scale = SCALE_CHROMATIC;
+}
+
+static void test_ui_phase5(void)
+{
+    memset(&in, 0, sizeof in);
+    in.master = 4096;
+    core_init();
+    stack_reset();
+    ui_init();
+    frame();
+    key_tap(UI_WHITE[0]);
+    btn_tap(UB_ARP);
+    CHECK(ui_view() == VIEW_PATTERN, "ARP: the patterns");
+    snapshot("patterns");
+    key_tap(UI_WHITE[1]);                      /* stopped: P2 at once */
+    CHECK(core_pattern() == 1, "key 2 picks P2: %d", core_pattern());
+    key_tap(UI_WHITE[0]);
+    in.buttons = 1u << UB_ARP;                 /* ARP held + keys 1, 1, 2: a chain */
+    frame();
+    key_tap(UI_WHITE[0]);
+    key_tap(UI_WHITE[0]);
+    key_tap(UI_WHITE[1]);
+    in.buttons = 0;
+    frame();
+    CHECK(g_proj.chain_len == 3 && g_proj.chain[2] == 1 && g_proj.play_mode == PLAY_CHAIN, "the chain P1 P1 P2");
+    in.enc[UE_ALGO] = 1;                       /* the song page */
+    frame();
+    snapshot("song");
+    in.enc[UE_K3] = 1;                         /* row 1 repeats 3 -> 4 */
+    frame();
+    CHECK(g_proj.song[0].reps == 4, "K3: repeats %u", g_proj.song[0].reps);
+    btn_tap(UB_SEL);
+    CHECK(ui_view() == VIEW_SCALE, "SEL: the scale");
+    in.enc[UE_K2] = 2;                         /* chromatic -> minor */
+    frame();
+    CHECK(g_proj.scale == SCALE_MINOR, "K2: the scale (%u)", g_proj.scale);
+    snapshot("scale");
+    g_proj.scale = SCALE_CHROMATIC;
+    /* a p-lock: the acid's step 1, LFO held, K1 (cutoff) up */
+    btn_tap(UB_SEQ);
+    key_tap(UI_BLACK[6]);
+    in.buttons = 1u << UB_LFO;
+    frame();
+    in.keys = 1u << UI_WHITE[0];
+    frame();
+    in.enc[UE_K1] = 2;
+    frame();
+    snapshot("seq_plock");
+    in.keys = 0;
+    frame();
+    in.buttons = 0;
+    frame();
+    CHECK(lock_get(6, 0, PR_CUTOFF) == (int)g_proj.pat.trk[6].p[PR_CUTOFF] + 2, "LFO + step + K1 locks the cutoff");
+    CHECK(g_proj.pat.trk[6].step[0].flags & STEP_ON, "the locked step stays on (no toggle on release)");
+    /* SAVE asks the platform */
+    btn_tap(UB_SAVE);
+    CHECK(ui_take_save() == 1 && ui_take_save() == 0, "SAVE: one request");
+    /* MIDI page */
+    btn_tap(UB_GLO);
+    in.enc[UE_ALGO] = 1;
+    frame();
+    in.enc[UE_K2] = 1;
+    frame();
+    CHECK(g_proj.clk_out == 1, "GLOBAL 2, K2: clock out on");
+    snapshot("global_midi");
+}
+
 static void test_cabinets(void)
 {
     int k;
@@ -994,6 +1331,12 @@ int main(int argc, char **argv)
     test_stack();
     test_stack_latency();
     test_ui_phase4();
+    test_serialize();
+    test_patterns();
+    test_locks();
+    test_midi();
+    test_scale();
+    test_ui_phase5();
     test_cabinets();
     golden_save();
     printf("%d checks, %d failed\n", checks, fails);

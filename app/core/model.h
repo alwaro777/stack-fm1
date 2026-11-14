@@ -67,8 +67,35 @@ typedef struct {
 } track_t;
 
 typedef struct {
-    track_t trk[NTRACKS];
+    track_t trk[NTRACKS];        /* the kit (each track's sound) and the current pattern's steps */
 } pattern_t;
+
+/* ------------------------------------------------------- patterns, locks --- */
+#define NPATTERNS 16
+#define NLOCKS 128               /* parameter locks per pattern */
+#define LOCK_NONE 0xFFu
+typedef struct {
+    uint8_t trk;                 /* LOCK_NONE = a free slot */
+    uint8_t step, param, value;
+} plock_t;
+
+/* a stored pattern: everything a pattern has beyond the kit */
+typedef struct {
+    step_t step[NTRACKS][NSTEPS];
+    uint8_t len[NTRACKS], scale[NTRACKS], dir[NTRACKS];
+    plock_t lock[NLOCKS];
+} bank_t;
+extern bank_t g_bank[NPATTERNS];
+
+#define NCHAIN 16
+#define NSONG 32
+typedef struct {
+    uint8_t pat, reps;           /* pattern index, how many times (1..16) */
+} songrow_t;
+
+enum { SCALE_CHROMATIC, SCALE_MAJOR, SCALE_MINOR, SCALE_DORIAN, SCALE_PHRYGIAN, SCALE_MIXOLYDIAN, SCALE_HARMMIN,
+       SCALE_PENTA_MIN, SCALE_PENTA_MAJ, SCALE_BLUES, NSCALE_TYPES };
+enum { PLAY_PATTERN, PLAY_CHAIN, PLAY_SONG };
 
 /* --------------------------------------------------------------- global --- */
 /* the master bus: the send effects, the pump, the compressor, the DJ filter (0..127 each) */
@@ -89,6 +116,16 @@ typedef struct {
     uint8_t swing;               /* 50..75 %: where the off-beat 16th sits inside its 8th */
     uint8_t seed;                /* the probability's dice start from this at each PLAY (repeatable) */
     uint8_t fx[NFX];
+    /* Phase 5 */
+    uint8_t cur_pat;             /* the pattern in pat (0..15) */
+    plock_t lock[NLOCKS];        /* its parameter locks */
+    uint8_t play_mode;           /* PLAY_* */
+    uint8_t chain[NCHAIN], chain_len;
+    songrow_t song[NSONG];
+    uint8_t song_len;
+    uint8_t scale, tonic;        /* the keys and the NOTE knob keep to this scale (tonic 0 = C) */
+    uint8_t clk_out, clk_in;     /* MIDI clock: send (0/1); follow (0 internal, 1 external) */
+    uint8_t transport;           /* bit 0 send start/stop, bit 1 obey it */
 } project_t;
 
 extern project_t g_proj;

@@ -164,3 +164,29 @@ Medidas (host, Apple Silicon; el FM-1 sin medir todavía):
 - **RAM (estimada)**: pool de fm1-base: framebuffer 28,1 + fondo 28,1 + bandas 15 + delay 128 + reverb 24 ≈ 223 KiB
   de 336; .bss propio ≈ 20 KiB.
 - Pendiente: p-locks (F5, con patrones y guardado).
+
+### F5 — patrones, canción, MIDI, guardado (hecho)
+- **16 patrones** (pasos, longitud/escala/dirección por pista y hasta 128 p-locks cada uno) que comparten el kit (los
+  sonidos de las 8 pistas). Cambio **pista a pista** justo cuando cada una decidiría su primer paso del patrón nuevo:
+  respeta el look-ahead, la polimetría y los pasos adelantados; el patrón dura lo que su pista más larga.
+- **Cadena** (hasta 16, se construye manteniendo ARP y pulsando patrones) y **canción** (32 filas patrón × repeticiones,
+  se detiene al final). Modo PATTERN/CHAIN/SONG.
+- **P-locks**: manteniendo LFO + un paso, los knobs bloquean los parámetros de la página de EDIT para ese paso;
+  LFO + paso + REC los borra. Se aplican en cada disparo sobre una copia del sonido y vuelven al kit en el siguiente.
+- **Escala y tónica** (10 escalas): el modo KEYS y el knob NOTE del paso se ciñen a ella.
+- **MIDI por USB**: canal por pista (las notas de los pasos salen; las que entran por ese canal tocan la pista y se
+  graban con REC), reloj de salida 24 ppqn, seguimiento de reloj externo (tempo suavizado, nunca más de un pulso
+  adelantado, se pone al día si va detrás: 150 BPM leídos como 150,0 en test), start/stop enviado u obedecido.
+  BLE y TRS-salida no: BLE sigue apagado (RAM, R7) y el FM-1 no tiene salida TRS; la entrada TRS llega como USB.
+- **Guardado**: 18 objetos del store de fm1-base (ajustes, kit, 16 patrones; A/B con CRC, a prueba de cortes),
+  formato versionado y validado campo a campo; patrón compacto (mapa de pasos + 6 B por paso), peor caso 3680 B de
+  3840. Solo se escriben los objetos cambiados; SAVE pide parar antes (una escritura en flash para el audio un
+  instante). SAVE se ilumina con cambios sin guardar. Al arrancar se carga lo guardado, o el demo.
+- **Exportar/importar**: el backup de fm1-base. En el emulador, botones "save/put back a backup"; en el FM-1, por USB
+  con `base/web/backup` o `tools/fm1_backup.py`: el mismo fichero en ambos sentidos.
+- **Tests**: ida y vuelta de todos los objetos, 2000 objetos dañados sin ningún fallo, cambio de patrón al tick exacto,
+  cadena, canción, locks, MIDI (notas, 24 pulsos/negra, start, entrada, reloj externo); en el simulador de la
+  plataforma: SAVE → reinicio → el cambio sigue; backup → cambio → restore → vuelve; notas y reloj salen por USB.
+- **RAM (estimada)**: pool ≈ 269 KiB de 336 (banco 74, delay 96, reverb 24, pantalla 71, E/S 4); .bss ≈ 30 KiB.
+  El delay bajó a 0,557 s máx. para dejar sitio al banco.
+- Pendiente para F6: demo "paso a paso" del emulador, medir en hardware, release.

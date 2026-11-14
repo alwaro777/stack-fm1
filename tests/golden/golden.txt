@@ -8,7 +8,7 @@ seq_playing e4592ed0
 edit_acid 1e3a07f8
 mix_mute3 5c02b7b3
 global e57f32c3
-help cde260a9
+help 52a2e48d
 cabinets 00516564
 stack_empty 17cdc27c
 stack_kick_falling ce999be2
@@ -57,3 +57,8 @@ preset_909_PUNCH faf0a0ab
 fx_delay a0a78d66
 fx_pump 3ab5f77e
 edit_chord_mem 5914f27f
+patterns 91c11bd6
+song e4cfbd3e
+scale ec83a2f1
+seq_plock 58048c8c
+global_midi a6621e19

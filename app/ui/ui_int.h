@@ -23,13 +23,18 @@ typedef struct {
     uint32_t ignore_keys, ignore_buttons;   /* held when a view changed under them: no event until released */
     int track, page, octave, keys_mode;
     int edit_page, glo_page, fx_page;
+    int pat_page, song_cursor;   /* the pattern view: 0 patterns, 1 the song */
+    int chain_started;           /* ARP held: the first pattern key since it went down restarts the chain */
+    int req_save, unsaved;
+    bank_t pclip;                /* a whole pattern copied */
+    int has_pclip;
     int scanlines;               /* the CRT look on the sound system */
     uint32_t blink;              /* the selected cabinet's blink phase last drawn */
     int held_step, held_edited, step_page;
     int shift_used;              /* SHIFT did something: its release is not a HOME tap */
     uint32_t flash_t[NTRACKS];
     uint8_t flash_vel[NTRACKS];
-    int shown_pos[NTRACKS], shown_play, shown_rec;
+    int shown_pos[NTRACKS], shown_play, shown_rec, shown_pat, shown_cue;
     track_t undo, clip;
     int undo_track, has_undo, has_clip;
     char msg[28];
@@ -46,7 +51,6 @@ extern const char *const UI_STEP_FIELD[2][4];
 extern const char *const UI_COND_NAME[NCONDS];
 
 void ui_cat(char *d, const char *s, uint32_t cap);
-void ui_int(char *d, int32_t v, uint32_t cap);
 void ui_note_text(char *d, int32_t note, uint32_t cap);
 void ui_log(const char *a, const char *b, const char *c);
 int ui_npages(const track_t *t);
@@ -57,6 +61,7 @@ void ui_param_text(const track_t *t, int id, char *d, uint32_t cap);
 void ui_step_text(const step_t *s, int page, int k, char *d, uint32_t cap);
 void ui_draw(uint32_t now);      /* the current view into fb */
 void ui_header(const char *left);
+void ui_pattern_text(char *d, uint32_t cap);   /* "P01", "P01>P03", with C (chain) or S (song) */
 extern const int8_t UI_FX_PAGE[3][4];
 extern const char *const UI_FX_NAME[NFX];
 void ui_fx_text(int id, char *d, uint32_t cap);

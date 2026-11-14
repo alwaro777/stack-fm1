@@ -96,6 +96,31 @@ static const uint8_t SCALE_TICKS[NSCALES] = {12, 24, 48, 96, 16, 32};
 
 static tplay_t tp[NTRACKS];
 static voice_t voice[NTRACKS];
+
+/* the sounds as they play: the kit with the current step's parameter locks over it (engines read these) */
+static track_t shadow[NTRACKS];
+static uint8_t locked[NTRACKS];
+
+/* patterns: where the current one started, how long it is; a switch under way (track by track) */
+static uint32_t pat_start, pat_len;
+static uint8_t sw_pending, sw_to, sw_from, sw_done, sw_planned;
+static uint32_t sw_tick;
+static int8_t cue = -1;          /* the pattern the player picked, for the next boundary */
+static uint8_t chain_pos, song_row, song_rep, nx_chain_pos, nx_song_row, nx_song_rep;
+static uint32_t nx_len;
+static uint8_t song_end;         /* the song ran out: stop at the boundary */
+
+/* MIDI: out (core -> platform), the external clock */
+#define MIDIQ_LEN 64u
+static struct {
+    volatile uint32_t head, tail;
+    uint32_t pkt[MIDIQ_LEN];
+} midiq;
+static uint32_t abs_samples;     /* samples since boot, running stopped or not */
+static uint32_t ext_last, ext_target;
+static int32_t ext_spt;          /* Q16 samples per tick, measured from the clock */
+static uint8_t ext_seen;
+static uint8_t midi_held[NTRACKS];   /* the note sent last per track (0xFF none) */
 static uint32_t rng;
 static uint32_t tick_now;        /* ticks since PLAY */
 static int32_t tick_rem;         /* Q16 samples until the next tick */
@@ -178,6 +203,100 @@ static int32_t next_pos(tplay_t *p, const track_t *t)
     }
 }
 
+static void shadow_sync(uint32_t ti)              /* the kit's sound into the shadow (no lock in force) */
+{
+    const track_t *t = &g_proj.pat.trk[ti];
+    track_t *sh = &shadow[ti];
+    uint32_t i;
+    sh->preset = t->preset;
+    sh->engine = t->engine;
+    sh->model = t->model;
+    sh->category = t->category;
+    sh->midi_ch = t->midi_ch;
+    for (i = 0; i < NPARAMS; i++)
+        sh->p[i] = t->p[i];
+    for (i = 0; i < 4; i++)
+        sh->chord[i] = t->chord[i];
+}
+
+static void apply_locks(uint32_t ti, uint32_t pos) /* a hit: this step's locks over the kit, until the next hit */
+{
+    uint32_t i;
+    shadow_sync(ti);
+    locked[ti] = 0;
+    for (i = 0; i < NLOCKS; i++)
+        if (g_proj.lock[i].trk == ti && g_proj.lock[i].step == pos && g_proj.lock[i].param < NPARAMS) {
+            shadow[ti].p[g_proj.lock[i].param] = g_proj.lock[i].value;
+            locked[ti] = 1;
+        }
+}
+
+/* ------------------------------------------------------------------ MIDI out --- */
+static void midi_out(uint32_t status, uint32_t d1, uint32_t d2)
+{
+    uint32_t h = midiq.head, cin = status >= 0xF0u ? 0x0Fu : status >> 4;
+    if (h - midiq.tail >= MIDIQ_LEN)
+        return;
+    midiq.pkt[h & (MIDIQ_LEN - 1u)] = cin | status << 8 | (d1 & 0x7Fu) << 16 | (d2 & 0x7Fu) << 24;
+    __asm__ volatile("" ::: "memory");
+    midiq.head = h + 1u;
+}
+
+int core_midi_pop(uint32_t *pkt)
+{
+    uint32_t t = midiq.tail;
+    if (t == midiq.head)
+        return 0;
+    __asm__ volatile("" ::: "memory");
+    *pkt = midiq.pkt[t & (MIDIQ_LEN - 1u)];
+    midiq.tail = t + 1u;
+    return 1;
+}
+
+static void midi_note_off_track(uint32_t ti)
+{
+    uint32_t ch = g_proj.pat.trk[ti].midi_ch;
+    if (ch && midi_held[ti] != 0xFFu)
+        midi_out(0x80u | (ch - 1u), midi_held[ti], 0);
+    midi_held[ti] = 0xFFu;
+}
+
+/* ------------------------------------------------------- the next pattern --- */
+/* what plays after the current pattern, by the play mode; the positions it implies are committed at the boundary */
+static uint32_t plan_next(void)
+{
+    uint32_t cur = g_proj.cur_pat;
+    nx_chain_pos = chain_pos;
+    nx_song_row = song_row;
+    nx_song_rep = song_rep;
+    if (cue >= 0) {
+        uint32_t c = (uint32_t)cue;
+        cue = -1;
+        return c;
+    }
+    if (g_proj.play_mode == PLAY_CHAIN && g_proj.chain_len) {
+        nx_chain_pos = (uint8_t)((chain_pos + 1u) % g_proj.chain_len);
+        return g_proj.chain[nx_chain_pos] & 15u;
+    }
+    if (g_proj.play_mode == PLAY_SONG && g_proj.song_len) {
+        const songrow_t *r = &g_proj.song[song_row % NSONG];
+        if ((uint32_t)song_rep + 1u < (r->reps ? r->reps : 1u)) {
+            nx_song_rep = (uint8_t)(song_rep + 1u);
+            return r->pat & 15u;
+        }
+        nx_song_rep = 0;
+        nx_song_row = (uint8_t)(song_row + 1u);
+        if (nx_song_row >= g_proj.song_len) {
+            song_end = 1;                          /* the song's last bar: stop when it ends */
+            nx_song_row = 0;
+        }
+        return g_proj.song[nx_song_row].pat & 15u;
+    }
+    return cur;
+}
+
+static void transport_stop(void);
+
 /* decide the next step of track ti: its hits, its note-off, its playhead move */
 static void decide(uint32_t ti)
 {
@@ -187,6 +306,23 @@ static void decide(uint32_t ti)
     int32_t len = t->len ? t->len : 1, pos, off, first, k, nh;
     uint32_t loop = p->count / (uint32_t)len, nominal = p->next_nominal;
     const step_t *s;
+    if (sw_pending && p->next_nominal >= sw_tick && !((sw_done >> ti) & 1u)) {
+        /* this track's next step is the new pattern's first: swap its steps, start it from step 1, on the boundary */
+        pattern_swap_track(ti, sw_from, sw_to);
+        p->count = 0;
+        p->pos = 0;
+        p->pp_dir = 1;
+        p->next_nominal = sw_tick;
+        sw_done |= (uint8_t)(1u << ti);
+        if (sw_done == 0xFFu) {
+            g_proj.cur_pat = sw_to;
+            sw_pending = 0;
+        }
+        spt = SCALE_TICKS[t->scale < NSCALES ? t->scale : SCALE_16];
+        len = t->len ? t->len : 1;
+        loop = 0;
+        nominal = p->next_nominal;
+    }
     pos = next_pos(p, t);
     p->pos = pos;
     p->count++;
@@ -243,13 +379,13 @@ static void voice_sync(uint32_t ti)
 
 static void voice_hit(uint32_t ti, uint32_t note, uint32_t vel, uint32_t flags, int legato)
 {
-    track_t *t = &g_proj.pat.trk[ti];
+    track_t *t = &shadow[ti];
     uint32_t j;
     voice_sync(ti);
     if (t->engine == ENGINE_ACID) {
         acid_trigger(&voice[ti].a, t, note, vel, flags, legato);
     } else if (t->engine == ENGINE_SYNTH || t->engine == ENGINE_FM) {
-        pool_note_on(ti, note, vel, flags, legato);
+        pool_note_on(ti, t, note, vel, flags, legato);
     } else if (t->engine == ENGINE_FX) {
         fx_trigger(&voice[ti].x, t, note, vel);
     } else {
@@ -302,15 +438,22 @@ static void fire(uint32_t ti, const qev_t *e)
             p->tied = (e->flags & STEP_SLIDE) != 0;
             break;
         }
+        apply_locks(ti, (uint32_t)e->pos);
         voice_hit(ti, e->note, e->vel, e->flags, p->tied && p->held);
         p->held = 1;
         p->tied = (e->flags & STEP_SLIDE) != 0;
         trig_push(sample_now, ti, e->note, e->vel, e->flags);
+        if (g_proj.pat.trk[ti].midi_ch) {          /* and to the outside: the track's MIDI channel */
+            midi_note_off_track(ti);
+            midi_out(0x90u | (g_proj.pat.trk[ti].midi_ch - 1u), e->note, e->vel);
+            midi_held[ti] = e->note;
+        }
         break;
     case QE_OFF:
         if (p->held)
             voice_off(ti, e->note ? e->note : 255u);
         p->held = 0;
+        midi_note_off_track(ti);
         break;
     }
 }
@@ -318,6 +461,36 @@ static void fire(uint32_t ti, const qev_t *e)
 static void seq_tick(void)
 {
     uint32_t ti;
+    /* the pattern's boundary: plan what follows a beat early, so every track finds it when it looks ahead */
+    if (!sw_planned && tick_now + 48u >= pat_start + pat_len) {
+        uint32_t nx = plan_next();
+        sw_planned = 1;
+        nx_len = nx == g_proj.cur_pat ? pattern_ticks() : bank_ticks(&g_bank[nx]);
+        if (nx != g_proj.cur_pat) {
+            sw_pending = 1;
+            sw_from = g_proj.cur_pat;
+            sw_to = (uint8_t)nx;
+            sw_done = 0;
+            sw_tick = pat_start + pat_len;
+        }
+    }
+    if (tick_now >= pat_start + pat_len) {         /* the boundary itself */
+        pat_start += pat_len;
+        pat_len = nx_len ? nx_len : pattern_ticks();
+        chain_pos = nx_chain_pos;
+        song_row = nx_song_row;
+        song_rep = nx_song_rep;
+        sw_planned = 0;
+        if (song_end) {
+            song_end = 0;
+            transport_stop();
+            if (g_proj.transport & 1u)
+                midi_out(0xFC, 0, 0);
+            return;
+        }
+    }
+    if (g_proj.clk_out && !(tick_now & 3u))       /* MIDI clock: 24 a quarter, one every 4 ticks */
+        midi_out(0xF8, 0, 0);
     for (ti = 0; ti < NTRACKS; ti++) {
         tplay_t *p = &tp[ti];
         const track_t *t = &g_proj.pat.trk[ti];
@@ -363,6 +536,26 @@ static void transport_play(void)
     tick_rem = 0;
     sample_now = 0;
     trigq.tail = trigq.head;                       /* (a fresh start: old triggers are history) */
+    /* where to start: the chain's first pattern, the song's first row, or the current pattern */
+    chain_pos = song_row = song_rep = 0;
+    song_end = 0;
+    if (g_proj.play_mode == PLAY_CHAIN && g_proj.chain_len && g_proj.chain[0] != g_proj.cur_pat)
+        pattern_switch_now(g_proj.chain[0]);
+    else if (g_proj.play_mode == PLAY_SONG && g_proj.song_len && g_proj.song[0].pat != g_proj.cur_pat)
+        pattern_switch_now(g_proj.song[0].pat);
+    if (cue >= 0) {
+        if ((uint32_t)cue != g_proj.cur_pat)
+            pattern_switch_now((uint32_t)cue);
+        cue = -1;
+    }
+    pat_start = 0;
+    pat_len = pattern_ticks();
+    sw_pending = sw_planned = 0;
+    ext_target = 0;
+    for (i = 0; i < NTRACKS; i++)
+        locked[i] = 0;
+    if (g_proj.transport & 1u)
+        midi_out(0xFA, 0, 0);
     playing = 1;
 }
 
@@ -370,7 +563,15 @@ static void transport_stop(void)
 {
     uint32_t i;
     playing = 0;
+    if (sw_pending) {                              /* a switch caught half way: finish it, so no track is left behind */
+        for (i = 0; i < NTRACKS; i++)
+            if (!((sw_done >> i) & 1u))
+                pattern_swap_track(i, sw_from, sw_to);
+        g_proj.cur_pat = sw_to;
+        sw_pending = 0;
+    }
     for (i = 0; i < NTRACKS; i++) {
+        midi_note_off_track(i);
         if (tp[i].held)
             voice_off(i, 255);
         tp[i].held = tp[i].tied = 0;
@@ -403,6 +604,8 @@ static void events(void)
         evq.tail++;
         if (ti >= NTRACKS && (type == EV_NOTE_ON || type == EV_NOTE_OFF))
             continue;
+        if (type == EV_NOTE_ON)                    /* a live note plays the kit as it is, without the step's locks */
+            shadow_sync(ti), locked[ti] = 0;
         switch (type) {
         case EV_NOTE_ON:
             voice_hit(ti, note, vel ? vel : 100, 0, 0);
@@ -422,10 +625,82 @@ static void events(void)
             break;
         case EV_STOP:
             transport_stop();
+            if (g_proj.transport & 1u)
+                midi_out(0xFC, 0, 0);
+            break;
+        case EV_PATTERN:                           /* note = the pattern: now if stopped, at the boundary if playing */
+            if (!playing) {
+                if ((note & 15u) != g_proj.cur_pat)
+                    pattern_switch_now(note & 15u);
+            } else {
+                cue = (int8_t)(note & 15u);
+                g_proj.play_mode = PLAY_PATTERN;
+            }
             break;
         }
     }
 }
+
+/* ---------------------------------------------------------------- MIDI in --- */
+/* from the platform, in the audio interrupt before the render: notes play the tracks on their channel; the clock and
+ * the transport when the settings say so */
+void core_midi_in(uint32_t status, uint32_t d1, uint32_t d2)
+{
+    uint32_t ti, type = status & 0xF0u, ch = (status & 0x0Fu) + 1u;
+    if (status == 0xF8u) {
+        if (g_proj.clk_in) {
+            uint32_t iv = abs_samples - ext_last;
+            if (ext_seen && iv > 0u && iv < 44100u) {   /* 24 a quarter: 2.4 .. 300 BPM */
+                int32_t sp = (int32_t)((iv << 16) / 4u);
+                ext_spt = ext_spt ? ext_spt - (ext_spt >> 3) + (sp >> 3) : sp;   /* smoothed: the block's jitter */
+            }
+            if (playing)
+                ext_target += 4u;
+            ext_last = abs_samples;
+            ext_seen = 1;
+        }
+        return;
+    }
+    if (status == 0xFAu || status == 0xFBu) {      /* start, continue (from the top: no song position) */
+        if (g_proj.transport & 2u) {
+            transport_play();
+            ext_target = 0;
+        }
+        return;
+    }
+    if (status == 0xFCu) {
+        if (g_proj.transport & 2u)
+            transport_stop();
+        return;
+    }
+    if (type != 0x90u && type != 0x80u)
+        return;
+    for (ti = 0; ti < NTRACKS; ti++) {
+        if (g_proj.pat.trk[ti].midi_ch != ch)
+            continue;
+        if (type == 0x90u && d2) {
+            shadow_sync(ti);
+            locked[ti] = 0;
+            voice_hit(ti, d1 & 0x7Fu, d2 & 0x7Fu, 0, 0);
+            trig_push(sample_now, ti, d1, d2, 0);
+            if (core_rec && playing)
+                record(ti, d1 & 0x7Fu, d2 & 0x7Fu);
+        } else {
+            voice_off(ti, d1 & 0x7Fu);
+        }
+    }
+}
+
+uint32_t core_ext_bpm10(void)                      /* the followed clock's tempo, 0 when not following one */
+{
+    if (!g_proj.clk_in || !ext_seen || ext_spt < 256)
+        return 0;
+    return (275625u << 8) / ((uint32_t)ext_spt >> 8);
+}
+
+int core_pattern(void) { return g_proj.cur_pat; }
+int core_cue(void) { return sw_pending ? sw_to : cue; }
+int core_song_row(void) { return song_row; }
 
 /* -------------------------------------------------------------- render --- */
 static int32_t trk_buf[STK_MAX_BLOCK];
@@ -441,8 +716,12 @@ static void render_chunk(int32_t *lr, uint32_t n, int32_t target)
         mix_l[f] = mix_r[f] = send_d[f] = send_r[f] = 0;
     pumping = fx_pump_fill(duck, n);
     for (ti = 0; ti < NTRACKS; ti++) {
-        const track_t *t = &g_proj.pat.trk[ti];
-        int32_t lvl = (int32_t)t->p[PR_LEVEL] * t->p[PR_LEVEL] * 2;          /* a squared curve, Q15 */
+        const track_t *t;
+        int32_t lvl;
+        if (!locked[ti] || shadow[ti].engine != g_proj.pat.trk[ti].engine)
+            shadow_sync(ti);                       /* no lock in force: the knobs as they are now */
+        t = &shadow[ti];
+        lvl = (int32_t)t->p[PR_LEVEL] * t->p[PR_LEVEL] * 2;                  /* a squared curve, Q15 */
         int32_t gl = (lvl * (TAB_PAN_L[t->p[PR_PAN] & 127] >> 1)) >> 14;     /* < 2^15 * 2^14 */
         int32_t gr = (lvl * (TAB_PAN_R[t->p[PR_PAN] & 127] >> 1)) >> 14;
         int32_t gd = (lvl * ((int32_t)t->p[PR_SEND_D] * 129)) >> 14;     /* sends: after the level, Q15 */
@@ -456,7 +735,7 @@ static void render_chunk(int32_t *lr, uint32_t n, int32_t target)
         switch (t->engine) {
         case ENGINE_ACID: acid_render(&voice[ti].a, t, trk_buf, n); break;
         case ENGINE_SYNTH:
-        case ENGINE_FM: pool_render(ti, trk_buf, n); break;
+        case ENGINE_FM: pool_render(ti, t, trk_buf, n); break;
         case ENGINE_FX: fx_render(&voice[ti].x, t, trk_buf, n); break;
         default: drum_render(&voice[ti].d, t, trk_buf, n); break;
         }
@@ -503,9 +782,21 @@ void core_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         n = STK_MAX_BLOCK;
     while (done < n) {
         uint32_t chunk = n - done;
+        int ext = g_proj.clk_in && ext_seen;
+        if (playing && ext) {
+            /* following a clock: our own tick rate from the clock's, never more than a clock ahead, catching up
+             * at once if behind */
+            if (ext_spt)
+                spt_q16 = ext_spt;
+            if (tick_now >= ext_target + 4u)
+                tick_rem = (int32_t)(chunk << 16) + 1;   /* hold: wait for the next clock */
+            else if (tick_now + 8u < ext_target)
+                tick_rem = 0;
+        }
         if (playing) {
             if (tick_rem <= 0) {
-                tempo_update();
+                if (!ext)
+                    tempo_update();
                 seq_tick();
                 tick_rem += spt_q16;
             }
@@ -516,6 +807,7 @@ void core_render(int32_t *lr, uint32_t n, uint32_t master_q12)
             }
         }
         render_chunk(&lr[2u * done], chunk, target);
+        abs_samples += chunk;
         if (playing) {
             tick_rem -= (int32_t)chunk << 16;
             sample_now += chunk;
@@ -568,24 +860,28 @@ static const char *const DEFAULT_KIT[NTRACKS] = {"909 PUNCH", "CLAP", "CL HAT", 
 /* the master bus's defaults: a dotted-8th dub delay and a mid room ready on the sends; no pump, no squash */
 static const uint8_t FX_DEFAULT[NFX] = {2, 70, 80, 90, 90, 50, 80, 0, 60, 0, 64};
 
-static void step_default(step_t *s)
-{
-    s->flags = 0;
-    s->note = 60;
-    s->vel = 100;
-    s->gate = 12;
-    s->prob = 100;
-    s->ratchet = 1;
-    s->micro = 0;
-    s->cond = COND_ALWAYS;
-}
-
 void core_clear_project(void)
 {
     uint32_t ti, i;
     g_proj.bpm10 = 1380;
     g_proj.swing = 50;
     g_proj.seed = 1;
+    g_proj.cur_pat = 0;
+    g_proj.play_mode = PLAY_PATTERN;
+    g_proj.chain_len = 0;
+    for (i = 0; i < NCHAIN; i++)
+        g_proj.chain[i] = 0;
+    g_proj.song_len = 0;
+    for (i = 0; i < NSONG; i++)
+        g_proj.song[i].pat = 0, g_proj.song[i].reps = 1;
+    g_proj.scale = SCALE_CHROMATIC;
+    g_proj.tonic = 0;
+    g_proj.clk_out = 0;
+    g_proj.clk_in = 0;
+    g_proj.transport = 0;
+    locks_clear(g_proj.lock);
+    for (i = 0; i < NPATTERNS; i++)
+        bank_clear(&g_bank[i]);
     for (ti = 0; ti < NTRACKS; ti++) {
         track_t *t = &g_proj.pat.trk[ti];
         for (i = 0; i < NSTEPS; i++)
@@ -650,6 +946,35 @@ void core_load_demo(void)
     g_proj.pat.trk[1].p[PR_SEND_R] = 50;
     g_proj.pat.trk[4].p[PR_SEND_D] = 80;
     g_proj.fx[FX_PUMP] = 50;
+    /* pattern 2, the breakdown: no kick, the stab on every bar and the acid an octave up with a p-locked filter
+     * climbing; then the chain P1 P1 P1 P2 (play mode CHAIN to hear it) */
+    {
+        bank_t *b = &g_bank[1];
+        uint32_t k;
+        for (k = 0; k < 16; k++) {
+            b->step[2][k] = g_proj.pat.trk[2].step[k];
+            b->step[6][k] = g_proj.pat.trk[6].step[k];
+            if (b->step[6][k].flags & STEP_ON)
+                b->step[6][k].note = (uint8_t)(b->step[6][k].note + 12);
+        }
+        b->step[1][12] = g_proj.pat.trk[1].step[12];
+        b->step[5][0] = g_proj.pat.trk[5].step[0];
+        b->step[5][8] = g_proj.pat.trk[5].step[0];
+        for (k = 0; k < 4; k++) {
+            b->lock[k].trk = 6;
+            b->lock[k].step = (uint8_t)(k * 4u);
+            b->lock[k].param = PR_CUTOFF;
+            b->lock[k].value = (uint8_t)(40 + k * 18);
+        }
+    }
+    g_proj.chain[0] = g_proj.chain[1] = g_proj.chain[2] = 0;
+    g_proj.chain[3] = 1;
+    g_proj.chain_len = 4;
+    g_proj.song[0].pat = 0;
+    g_proj.song[0].reps = 3;
+    g_proj.song[1].pat = 1;
+    g_proj.song[1].reps = 1;
+    g_proj.song_len = 2;
 }
 
 void core_init(void)
@@ -675,7 +1000,18 @@ void core_init(void)
     peak_q15 = 0;
     spt_bpm = 0;
     core_load_demo();
-    for (i = 0; i < NTRACKS; i++)
+    for (i = 0; i < NTRACKS; i++) {
         voice_engine[i] = g_proj.pat.trk[i].engine;
+        midi_held[i] = 0xFFu;
+        locked[i] = 0;
+        shadow_sync(i);
+    }
+    cue = -1;
+    sw_pending = sw_planned = 0;
+    midiq.head = midiq.tail = 0;
+    ext_seen = 0;
+    ext_spt = 0;
+    pat_start = 0;
+    pat_len = pattern_ticks();
     tempo_update();
 }

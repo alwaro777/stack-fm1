@@ -92,9 +92,8 @@ static void start(pool_t *p, const track_t *t, uint32_t note, uint32_t vel, int 
         synth_start(&p->v, t, n256, vel, legato);
 }
 
-void pool_note_on(uint32_t track, uint32_t note, uint32_t vel, uint32_t flags, int legato)
+void pool_note_on(uint32_t track, const track_t *t, uint32_t note, uint32_t vel, uint32_t flags, int legato)
 {
-    const track_t *t = &g_proj.pat.trk[track];
     uint32_t maxp = max_poly(t->engine, t->model), n, i;
     int8_t iv[4];
     (void)flags;
@@ -151,9 +150,8 @@ void pool_note_off(uint32_t track, uint32_t note)
     }
 }
 
-int pool_render(uint32_t track, int32_t *out, uint32_t n)
+int pool_render(uint32_t track, const track_t *t, int32_t *out, uint32_t n)
 {
-    const track_t *t = &g_proj.pat.trk[track];
     uint32_t i;
     int any = 0;
     for (i = 0; i < NPOOL; i++) {

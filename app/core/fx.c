@@ -2,7 +2,7 @@
  * STACK — the master bus: the send effects, the pump, the compressor and the DJ filter.
  *   delay    a dub ping-pong: the sends go into the left line, each line's echo feeds the other, through a tone
  *            low-pass, a gentle high-pass and tanh in the loop (so it can run away and growl, never explode). Time in
- *            16ths of the tempo; 0.74 s at most (32768 frames a side)
+ *            16ths of the tempo; 0.557 s at most (24576 frames a side)
  *   reverb   Freeverb's shape (Jezar's public-domain design): four damped combs and two all-passes a side, the right
  *            side's lengths 23 samples longer for width
  *   pump     the sidechain: every kick ducks the other tracks, which come back over FX_PUMP_REL
@@ -12,8 +12,7 @@
 #include "core.h"
 #include "engine.h"
 
-#define DLY_LEN 32768u
-#define DLY_MASK (DLY_LEN - 1u)
+#define DLY_LEN 24576u           /* 0.557 s a side: a dub 3/16 from 100 BPM up (the pool's room goes to the patterns) */
 static int16_t dly_l[DLY_LEN] STK_BIG, dly_r[DLY_LEN] STK_BIG;
 static uint32_t dly_w;
 static int32_t dly_lp_l, dly_lp_r, dly_hp_l, dly_hp_r;
@@ -144,16 +143,18 @@ void fx_bus(int32_t *l, int32_t *r, const int32_t *sd, const int32_t *sr, uint32
         if (d > DLY_LEN - 1u)
             d = DLY_LEN - 1u;
         for (i = 0; i < n; i++) {
-            int32_t ol = dly_l[(dly_w - d) & DLY_MASK], or_ = dly_r[(dly_w - d) & DLY_MASK], in_l, in_r;
+            uint32_t rd = dly_w >= d ? dly_w - d : dly_w + DLY_LEN - d;
+            int32_t ol = dly_l[rd], or_ = dly_r[rd], in_l, in_r;
             in_l = dsp_lp1(&dly_lp_l, (or_ * fb) >> 15, g_lp);   /* the right echo comes back left, */
             in_r = dsp_lp1(&dly_lp_r, (ol * fb) >> 15, g_lp);    /* the left one right: ping-pong */
             in_l -= dsp_lp1(&dly_hp_l, in_l, g_hp);
             in_r -= dsp_lp1(&dly_hp_r, in_r, g_hp);
             in_l = dsp_tanh(clampi(in_l + clampi(sd[i], -32767, 32767), -65535, 65535));
             in_r = dsp_tanh(clampi(in_r, -65535, 65535));
-            dly_l[dly_w & DLY_MASK] = (int16_t)in_l;
-            dly_r[dly_w & DLY_MASK] = (int16_t)in_r;
-            dly_w++;
+            dly_l[dly_w] = (int16_t)in_l;
+            dly_r[dly_w] = (int16_t)in_r;
+            if (++dly_w >= DLY_LEN)
+                dly_w = 0;
             l[i] += (ol * lvl) >> 15;
             r[i] += (or_ * lvl) >> 15;
         }
