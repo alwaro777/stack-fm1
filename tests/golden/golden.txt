@@ -20,6 +20,14 @@ seq_step_held d2e5d323
 seq_playing 21d12d99
 edit_acid 457f5bd3
 mix_mute3 5c02b7b3
-global 060d2cd3
-help 43413875
+global e57f32c3
+help b18a9899
 cabinets 00516564
+stack_empty 17cdc27c
+stack_kick_falling ce999be2
+stack_kick a0dc2bfd
+stack_kick_hat 62415277
+stack_kick_muted 387d094d
+stack_demo 984974af
+stack_solo_acid 2034da19
+stack_scanlines 753082a2

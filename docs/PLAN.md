@@ -120,3 +120,22 @@ Medidas (host, Apple Silicon; el FM-1 sin medir todavía):
 | Demo (6 pistas) | 0,42 % de tiempo real | ~8–17 % de un core |
 | Peor caso (8 pistas, 1/32, ratchet ×4, accent) | 1,1 % | ~22–45 % |
 | RAM propia | proyecto 4,4 KiB + voces/colas ~3 KiB + framebuffer 28 KiB + 2 bandas 15 KiB | |
+
+### F3 — el sound system (hecho)
+- Vista principal tras el flyer y con HOME. Cada pista con al menos un paso activo trae su caja; patrón vacío =
+  escenario vacío (suelo, pancarta "STACK HI-FI" original, torre de truss, flightcase con pegatinas).
+- Layout determinista: filas de abajo arriba SUB (50×52, 4 por fila), MID (44×40, 4), TOP (36×28, 5); una categoría
+  que desborda apila otra fila suya; filas centradas en un eje a la izquierda del flightcase; pistas en orden.
+  La categoría viene del preset y se cambia en la página de EDIT (CAT).
+- Animación: caída con rebote (520 ms), recolocación con ease-out (260 ms), salida hacia arriba al vaciarse la pista.
+- Reactividad: el cono sale 1–3 niveles según velocidad/accent y vuelve en pasos de 45 ms; mute = caja gris;
+  solo = las demás en sombra tramada; pista seleccionada = marco lima parpadeante (300 ms); cincha amarilla en la fila
+  de subs. Cabecera: patrón, BPM, play/rec. Pie: nombre y 16 pasos de la pista seleccionada con playhead.
+- Scanlines opcionales (GLOBAL, página 2).
+- Rendimiento: fondo cacheado (28 KiB en el pool) + cajas; un frame de UI cuesta ~39 µs en el host. Envío a pantalla
+  por baldosas de 16×16: a 140 BPM 256 KB/s frente a 977 KB/s por franjas completas (~17 % de un SPI de 12 MHz,
+  velocidad aún sin medir en el FM-1). Latencia disparo → cono: ≤ 1 frame (16 ms), comprobada en test.
+- Criterios de aceptación cubiertos por tests (`test_stack`, `test_stack_latency`): kick → SUB; hat → TOP; mute →
+  caja apagada; 8 de 8 kicks visibles en el frame siguiente a 140 BPM.
+- No hecho (opcional en el encargo): auto-clasificar la categoría por centroide espectral. El número de patrón es fijo
+  (P01) hasta la Fase 5.

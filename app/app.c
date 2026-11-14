@@ -2,6 +2,7 @@
  * STACK — the platform glue (our "hal"): fm1-base's plat.h on one side, core/ and ui/ on the other.
  * Part of fm1-base's unity build, after the platform (gfx.c, lcd.c are in scope). core/ and ui/ never include plat.h:
  * they build alone for the unit tests (tests/unit). */
+#define STK_BIG PLAT_POOL                /* the framebuffer and the stage's cached background: the large RAM pool */
 #include "core/core.c"
 #include "core/drums.c"
 #include "core/acid.c"
@@ -10,6 +11,7 @@
 #include "ui/cabinet.c"
 #include "ui/ui.c"
 #include "ui/ui_draw.c"
+#include "ui/stack.c"
 
 /* the plat.h order is the UI's order: the input is copied bit for bit */
 _Static_assert(B_FX == UB_FX && B_HOME == UB_HOME && B_PLAY == UB_PLAY && B_OCTDN == UB_OCTDN && NB == UI_NBUTTONS,
@@ -40,18 +42,20 @@ static void flush(uint32_t max_bands)
     uint32_t m = fb_changed_bands(), sent = 0, b, n = 0;
     for (b = 0; b < FB_NBANDS && n < max_bands; b++) {
         uint16_t *dst;
-        const uint8_t *src;
-        uint32_t i;
-        if (!(m >> b & 1u))
+        int32_t x0, w, r, i;
+        if (!(m >> b & 1u) || !fb_band_span(b, &x0, &w))
             continue;
         dst = band_buf[which];
         which ^= 1u;
-        src = &fb_px[b * FB_BAND * FB_STRIDE];
-        for (i = 0; i < (uint32_t)(FB_BAND * FB_STRIDE); i++) {   /* two pixels a byte, left in the high nibble */
-            dst[2u * i] = pal_be[src[i] >> 4];
-            dst[2u * i + 1u] = pal_be[src[i] & 15u];
+        for (r = 0; r < FB_BAND; r++) {           /* the changed span only: two pixels a byte, left in the high nibble */
+            const uint8_t *src = &fb_px[(b * FB_BAND + (uint32_t)r) * FB_STRIDE + (uint32_t)x0 / 2u];
+            uint16_t *d = &dst[r * w];
+            for (i = 0; i < w / 2; i++) {
+                d[2 * i] = pal_be[src[i] >> 4];
+                d[2 * i + 1] = pal_be[src[i] & 15u];
+            }
         }
-        lcd_blit(0, b * FB_BAND, FB_W, FB_BAND, dst);
+        lcd_blit((uint32_t)x0, b * FB_BAND, (uint32_t)w, FB_BAND, dst);
         sent |= 1u << b;
         n++;
     }

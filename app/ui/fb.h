@@ -11,6 +11,13 @@
 #define FB_BAND 16                         /* rows per band */
 #define FB_NBANDS (FB_H / FB_BAND)         /* 15 */
 #define FB_STRIDE (FB_W / 2)               /* bytes per row: two pixels a byte, left pixel in the high nibble */
+#define FB_TILE 16                         /* change tracking: tiles of 16 x 16 */
+#define FB_NTILES (FB_W / FB_TILE)         /* 15 per band */
+
+/* where the big buffers live: the platform glue puts them in its large RAM pool (fm1-base PLAT_POOL) */
+#ifndef STK_BIG
+#define STK_BIG
+#endif
 
 /* the palette: a rave flyer's limited set. Indices are what the UI draws with. */
 enum {
@@ -31,6 +38,8 @@ void fb_hline(int32_t x, int32_t y, int32_t w, uint8_t c);
 void fb_vline(int32_t x, int32_t y, int32_t h, uint8_t c);
 /* ordered (Bayer 4x4) dither between two colours: level 0 = all a, 16 = all b */
 void fb_dither(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t a, uint8_t b, uint32_t level);
+/* the same pattern over what is there: level of 16 pixels become c, the rest stay */
+void fb_shade(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t c, uint32_t level);
 /* a vertical dithered gradient from a (top) to b (bottom) */
 void fb_vgrad(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t a, uint8_t b);
 void fb_disc(int32_t cx, int32_t cy, int32_t r, uint8_t c);                    /* filled circle */
@@ -47,10 +56,14 @@ int32_t fb_text_w(const char *s, int32_t scale);
 int32_t fb_text_shadow(int32_t x, int32_t y, const char *s, uint8_t c, uint8_t sh, int32_t scale, int32_t d);
 void fb_text_center(int32_t y, const char *s, uint8_t c, int32_t scale);
 
-/* the flush side: which bands differ from what was last sent (by a hash of each band), and mark them sent */
+/* the flush side: which bands differ from what was last sent (by a hash of each 16 x 16 tile), and mark them sent */
 uint32_t fb_changed_bands(void);           /* bit b = band b changed */
+int fb_band_span(uint32_t b, int32_t *x0, int32_t *w);   /* band b's changed span (whole tiles); 0 if none */
 void fb_mark_sent(uint32_t bands);
 void fb_invalidate(void);                  /* everything will be sent again (after the platform drew over it) */
 uint32_t fb_hash(void);                    /* the whole screen's hash (FNV-1a), for tests */
+void fb_copy(uint8_t *dst, const uint8_t *src);   /* a whole screen's bytes (both 4-byte aligned) */
+/* scanlines: every other row of [y0, y1) a shade darker (the CRT look) */
+void fb_scanlines(int32_t y0, int32_t y1);
 
 #endif

@@ -21,9 +21,9 @@ const uint8_t fb_palette_rgb[P_NCOLORS][3] = {
     {132, 92, 56},   /* P_WOOD    the stage floor */
 };
 
-uint8_t fb_px[FB_H * FB_STRIDE];
-static uint32_t band_sent[FB_NBANDS];      /* hash of each band as last sent */
-static uint32_t band_ok;                   /* bit b: band_sent[b] holds what the panel shows (0 after invalidate) */
+uint8_t fb_px[FB_H * FB_STRIDE] STK_BIG __attribute__((aligned(4)));
+static uint32_t tile_sent[FB_NBANDS][FB_NTILES];   /* each tile's hash as last sent */
+static uint32_t band_ok;                   /* bit b: band b's hashes hold what the panel shows (0 after invalidate) */
 
 static inline void fb_put(int32_t x, int32_t y, uint8_t c)
 {
@@ -103,6 +103,17 @@ void fb_dither(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t a, uint8_t b,
     for (j = y; j < y + h; j++)
         for (i = x; i < x + w; i++)   /* by screen position, so neighbouring areas tile seamlessly */
             fb_put(i, j, FB_BAYER4[(j & 3) * 4 + (i & 3)] < level ? b : a);
+}
+
+void fb_shade(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t c, uint32_t level)
+{
+    int32_t i, j;
+    if (!fb_clip(&x, &y, &w, &h))
+        return;
+    for (j = y; j < y + h; j++)
+        for (i = x; i < x + w; i++)
+            if (FB_BAYER4[(j & 3) * 4 + (i & 3)] < level)
+                fb_put(i, j, c);
 }
 
 void fb_vgrad(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t a, uint8_t b)
@@ -223,35 +234,75 @@ void fb_text_center(int32_t y, const char *s, uint8_t c, int32_t scale)
 }
 
 /* --------------------------------------------------------------- flushing --- */
-static uint32_t band_hash(uint32_t b)
+/* Each band is 15 tiles of 16 x 16 pixels; a tile's hash says whether it changed since it was sent. A band goes out
+ * as the one span from its first changed tile to its last: a cone that pushes sends its own cabinet's width, not the
+ * whole screen's. */
+static uint32_t tile_hash(uint32_t b, uint32_t t)
 {
-    uint32_t h = 2166136261u, i;
-    const uint8_t *p = &fb_px[b * FB_BAND * FB_STRIDE];
-    for (i = 0; i < (uint32_t)(FB_BAND * FB_STRIDE); i++)
-        h = (h ^ p[i]) * 16777619u;
+    uint32_t h = 2166136261u, r, i;
+    for (r = 0; r < FB_BAND; r++) {
+        const uint8_t *p = &fb_px[(b * FB_BAND + r) * FB_STRIDE + t * (FB_TILE / 2)];
+        for (i = 0; i < FB_TILE / 2; i++)
+            h = (h ^ p[i]) * 16777619u;
+    }
     return h;
+}
+
+static uint32_t tiles_changed(uint32_t b)       /* bit t: tile t of band b differs from what was sent */
+{
+    uint32_t t, m = 0;
+    if (!(band_ok >> b & 1u))
+        return (1u << FB_NTILES) - 1u;
+    for (t = 0; t < FB_NTILES; t++)
+        if (tile_hash(b, t) != tile_sent[b][t])
+            m |= 1u << t;
+    return m;
 }
 
 uint32_t fb_changed_bands(void)
 {
     uint32_t b, m = 0;
     for (b = 0; b < FB_NBANDS; b++)
-        if (!(band_ok >> b & 1u) || band_hash(b) != band_sent[b])
+        if (tiles_changed(b))
             m |= 1u << b;
     return m;
 }
 
+int fb_band_span(uint32_t b, int32_t *x0, int32_t *w)
+{
+    uint32_t m = b < FB_NBANDS ? tiles_changed(b) : 0, lo = 0, hi = FB_NTILES - 1u;
+    if (!m)
+        return 0;
+    while (!(m >> lo & 1u))
+        lo++;
+    while (!(m >> hi & 1u))
+        hi--;
+    *x0 = (int32_t)(lo * FB_TILE);
+    *w = (int32_t)((hi - lo + 1u) * FB_TILE);
+    return 1;
+}
+
 void fb_mark_sent(uint32_t bands)
 {
-    uint32_t b;
+    uint32_t b, t;
     for (b = 0; b < FB_NBANDS; b++)
         if (bands >> b & 1u) {
-            band_sent[b] = band_hash(b);
+            for (t = 0; t < FB_NTILES; t++)
+                tile_sent[b][t] = tile_hash(b, t);
             band_ok |= 1u << b;
         }
 }
 
 void fb_invalidate(void) { band_ok = 0; }
+
+void fb_copy(uint8_t *dst, const uint8_t *src)  /* a whole screen, e.g. a cached background */
+{
+    uint32_t i;
+    const uint32_t *s = (const uint32_t *)(const void *)src;
+    uint32_t *d = (uint32_t *)(void *)dst;
+    for (i = 0; i < sizeof fb_px / 4u; i++)
+        d[i] = s[i];
+}
 
 uint32_t fb_hash(void)
 {
@@ -259,4 +310,18 @@ uint32_t fb_hash(void)
     for (i = 0; i < sizeof fb_px; i++)
         h = (h ^ fb_px[i]) * 16777619u;
     return h;
+}
+
+void fb_scanlines(int32_t y0, int32_t y1)
+{
+    /* each colour's darker neighbour in the palette */
+    static const uint8_t DARK[P_NCOLORS] = {P_BLACK, P_BLACK, P_NIGHT, P_DGRAY, P_GRAY, P_LGRAY, P_DORANGE, P_BLACK,
+                                            P_ORANGE, P_LORANGE, P_DGRAY, P_PURPLE, P_GRAY, P_DORANGE, P_NIGHT,
+                                            P_DORANGE};
+    int32_t y, i;
+    for (y = y0 | 1; y < y1 && y < FB_H; y += 2) {
+        uint8_t *row = &fb_px[y * FB_STRIDE];
+        for (i = 0; i < FB_STRIDE; i++)
+            row[i] = (uint8_t)(DARK[row[i] >> 4] << 4 | DARK[row[i] & 15u]);
+    }
 }

@@ -345,8 +345,8 @@ static void black_key(int k, int shift)
 {
     if (k < NTRACKS) {
         uint32_t bit = 1u << k;
-        if (ui.view == VIEW_MIX || shift) {
-            if (shift && ui.view == VIEW_MIX)
+        if (ui.view == VIEW_STACK || shift) {
+            if (shift && ui.view == VIEW_STACK)
                 core_solo ^= bit;
             else
                 core_mute ^= bit;
@@ -434,6 +434,8 @@ static void knobs(const ui_input_t *in)
         int d = in->enc[UE_ALGO] > 0 ? 1 : -1;
         if (ui.held_step >= 0)
             ui.step_page ^= 1;
+        else if (ui.view == VIEW_GLOBAL)
+            ui.glo_page ^= 1;
         else if (ui.view == VIEW_EDIT || ui.view == VIEW_SEQ)
             ui.edit_page = (ui.edit_page + d + ui_npages(t)) % ui_npages(t);
     }
@@ -444,7 +446,10 @@ static void knobs(const ui_input_t *in)
         if (ui.held_step >= 0) {                   /* a held step: its fields */
             step_edit(&t->step[ui.held_step], ui.step_page, k, d);
             ui.held_edited = 1;
-        } else if (ui.view == VIEW_GLOBAL || ui.view == VIEW_MIX) {
+        } else if (ui.view == VIEW_GLOBAL && ui.glo_page == 1) {
+            if (k == 0)
+                ui.scanlines = d > 0;
+        } else if (ui.view == VIEW_GLOBAL || ui.view == VIEW_STACK) {
             if (k == 0)
                 g_proj.bpm10 = (uint16_t)clampi(g_proj.bpm10 + d * 10, BPM_MIN, BPM_MAX);
             else if (k == 1)
@@ -475,7 +480,7 @@ static void io_input(const ui_input_t *in)
         if (down >> i & 1u) {
             ui_log("BTN", BTN[i], "DOWN");
             if (i == UB_HOME) {
-                ui.view = VIEW_SEQ;
+                ui.view = VIEW_STACK;
                 core_post(EV_ALL_OFF, 0, 0, 0);
                 ui.ignore_buttons |= 1u << UB_HOME;
             }
@@ -528,7 +533,7 @@ static int any_enc(const ui_input_t *in)
 
 static void leave_splash(const ui_input_t *in)
 {
-    ui.view = VIEW_SEQ;
+    ui.view = VIEW_STACK;
     ui.ignore_keys = in->keys;                     /* what left the flyer does nothing else */
     ui.ignore_buttons = in->buttons;
     ui.dirty = 1;
@@ -548,6 +553,7 @@ int ui_frame(const ui_input_t *in, uint32_t now)
         if (tg.track < NTRACKS) {
             ui.flash_t[tg.track] = now;
             ui.flash_vel[tg.track] = tg.vel;
+            stack_trigger(tg.track, tg.vel, tg.flags, now);
         }
         ui.dirty = 1;
     }
@@ -577,8 +583,8 @@ int ui_frame(const ui_input_t *in, uint32_t now)
             else
                 button(i);
         }
-        if ((up >> UB_HOME & 1u) && !ui.shift_used) {   /* a HOME tap: the mixer */
-            ui.view = ui.view == VIEW_MIX ? VIEW_SEQ : VIEW_MIX;
+        if ((up >> UB_HOME & 1u) && !ui.shift_used) {   /* a HOME tap: the sound system */
+            ui.view = VIEW_STACK;
             ui.dirty = 1;
         }
         if (in->keys != ui.prev.keys || (ui.prev.keys & ui.ignore_keys))
@@ -598,6 +604,12 @@ int ui_frame(const ui_input_t *in, uint32_t now)
             ui.flash_t[i] = 0;
             ui.dirty = 1;
         }
+    }
+    if (stack_update(now) && ui.view == VIEW_STACK)   /* (kept up to date in every view: no stale cabinets) */
+        ui.dirty = 1;
+    if (ui.view == VIEW_STACK && now / 300u != ui.blink) {   /* the selected cabinet blinks */
+        ui.blink = now / 300u;
+        ui.dirty = 1;
     }
     if (ui.msg_until && now >= ui.msg_until) {
         ui.msg_until = 0;

@@ -10,7 +10,7 @@ static int lamp(uint32_t t)                     /* 1 while track t's last hit is
     return ui.flash_t[t] != 0;
 }
 
-static void header(const char *left)
+void ui_header(const char *left)
 {
     char t[24];
     int32_t x;
@@ -164,7 +164,7 @@ static void draw_seq(void)
     ui_cat(s, TRACK_KEY[ui.track], sizeof s);
     ui_cat(s, " ", sizeof s);
     ui_cat(s, PRESETS[t->preset].name, sizeof s);
-    header(s);
+    ui_header(s);
     /* the track's settings */
     s[0] = 0;
     ui_cat(s, "LEN ", sizeof s);
@@ -275,7 +275,7 @@ static void draw_edit(void)
     ui_cat(s, "T", sizeof s);
     ui_cat(s, TRACK_KEY[ui.track], sizeof s);
     ui_cat(s, " EDIT", sizeof s);
-    header(s);
+    ui_header(s);
     /* the preset, big, with its engine; PRESET turns it */
     fb_text(4, 18, "PRESET", P_GRAY, 1);
     fb_text_shadow(4, 30, PRESETS[t->preset].name, P_YELLOW, P_MAGENTA, 2, 1);
@@ -305,7 +305,14 @@ static void draw_global(void)
 {
     char a[16], b[16], c[16], d[16];
     fb_clear(P_NIGHT);
-    header("GLOBAL");
+    ui_header(ui.glo_page ? "GLOBAL 2/2" : "GLOBAL 1/2");
+    if (ui.glo_page) {                             /* the look */
+        knob_box(4, 30, 55, "SCANLINES", ui.scanlines ? "ON" : "OFF", ui.scanlines, 0, 1, 0);
+        fb_text(4, 84, "SCANLINES: THE STACK SEEN", P_GRAY, 1);
+        fb_text(4, 94, "THROUGH AN OLD TV.", P_GRAY, 1);
+        footer("ALGO: PAGE 1");
+        return;
+    }
     a[0] = b[0] = c[0] = d[0] = 0;
     ui_int(a, g_proj.bpm10 / 10, sizeof a);
     ui_int(b, g_proj.swing, sizeof b);
@@ -326,40 +333,54 @@ static void draw_global(void)
     ui_cat(a, "%  XRUNS ", sizeof a);
     ui_int(a, (int32_t)ui.xruns, sizeof a);
     fb_text(4, 120, a, P_LGRAY, 1);
-    footer("SHIFT+GLO: HELP");
+    footer("ALGO: PAGE 2   SHIFT+GLO: HELP");
 }
 
-/* ------------------------------------------- MIX (the stack from Phase 3) --- */
-static void draw_mix(void)
+/* ----------------------------------------------------- the sound system --- */
+void ui_steps_bar(int32_t y)
 {
-    static const char *const CAT[NCATS] = {"SUB", "MID", "TOP"};
-    static const uint8_t CATC[NCATS] = {P_MAGENTA, P_ORANGE, P_LIME};
-    int i;
-    fb_clear(P_NIGHT);
-    header("MIXER");
-    for (i = 0; i < NTRACKS; i++) {
-        const track_t *t = &g_proj.pat.trk[i];
-        int32_t x = 4 + i * 29, h = t->p[PR_LEVEL] * 120 / 127;
-        int mute = (core_mute >> i) & 1u, solo = (core_solo >> i) & 1u;
-        int off = mute || (core_solo && !solo);
-        char n[4];
-        n[0] = 0;
-        ui_cat(n, TRACK_KEY[i], sizeof n);
-        fb_rect(x, 16, 26, 200, i == ui.track ? P_PURPLE : P_BLACK);
-        fb_text(x + 10, 20, n, P_WHITE, 1);
-        if (lamp((uint32_t)i) && !off)
-            fb_disc(x + 13, 38, 7, P_YELLOW);
-        else
-            fb_ring(x + 13, 38, 7, P_DGRAY);
-        fb_rect(x + 9, 52, 8, 124, P_DGRAY);
-        fb_rect(x + 9, 52 + 124 - h, 8, h, off ? P_GRAY : P_ORANGE);
-        if (mute)
-            fb_text(x + 10, 182, "M", P_RED, 1);
-        if (solo)
-            fb_text(x + 10, 182, "S", P_LIME, 1);
-        fb_text(x + 4, 200, CAT[t->category % NCATS], CATC[t->category % NCATS], 1);
+    const track_t *t = &g_proj.pat.trk[ui.track];
+    int i, play = core_play_pos((uint32_t)ui.track);
+    char s[24];
+    fb_rect(0, y, FB_W, FB_H - y, P_BLACK);
+    if (ui.msg_until) {
+        fb_text(3, y + 3, ui.msg, P_YELLOW, 1);
+    } else {
+        s[0] = 0;
+        ui_cat(s, TRACK_KEY[ui.track], sizeof s);
+        ui_cat(s, " ", sizeof s);
+        ui_cat(s, PRESETS[t->preset].name, sizeof s);
+        fb_text(3, y + 3, s, lamp((uint32_t)ui.track) ? P_YELLOW : P_LGRAY, 1);
+        if ((core_mute >> ui.track) & 1u)
+            fb_text(FB_W - 3 - fb_text_w("MUTED", 1), y + 3, "MUTED", P_RED, 1);
+        else if ((core_solo >> ui.track) & 1u)
+            fb_text(FB_W - 3 - fb_text_w("SOLO", 1), y + 3, "SOLO", P_LIME, 1);
     }
-    footer("KEYS 1-8: MUTE  HOME+KEY: SOLO");
+    for (i = 0; i < PAGE; i++) {
+        int st = ui.page * PAGE + i;
+        int32_t x = 4 + i * 15;
+        uint8_t c;
+        if (st >= t->len)
+            c = P_NIGHT;
+        else if (t->step[st].flags & STEP_ON)
+            c = (t->step[st].flags & STEP_ACCENT) ? P_YELLOW : P_ORANGE;
+        else
+            c = !(i & 3) ? P_DGRAY : P_NIGHT;
+        fb_rect(x, y + 13, 13, 9, c);
+        if (st == play)
+            fb_frame(x - 1, y + 12, 15, 11, P_WHITE);
+        if (st == ui.held_step)
+            fb_frame(x, y + 13, 13, 9, P_LIME);
+    }
+}
+
+static void draw_stack(uint32_t now)
+{
+    stack_draw(now);
+    if (ui.scanlines)
+        fb_scanlines(12, 214);
+    ui_header("P01");
+    ui_steps_bar(214);
 }
 
 /* ------------------------------------------------------------- HELP --- */
@@ -367,12 +388,12 @@ static void draw_help(void)
 {
     static const char *const L[] = {
         "WHITE KEYS   STEPS (HOLD+KNOB=EDIT)",
-        "BLACK 1-8    TRACK  (MIXER: MUTE)",
+        "BLACK 1-8    TRACK (STACK: MUTE)",
         "BLACK 9/10   PAGE / FILL (HOLD)",
         "BLACK 11     KEYS MODE (SEQ: BACK)",
         "PLAY  REC    PLAY-STOP / LIVE REC",
         "SEQ EDIT ENV GLO   VIEWS",
-        "HOME (TAP)   MIXER",
+        "HOME (TAP)   THE SOUND SYSTEM",
         "OCT- OCT+    PAGE / OCTAVE",
         "SELECT       TRACK",
         "ALGO         KNOB PAGE",
@@ -381,11 +402,11 @@ static void draw_help(void)
         "HOME HELD = SHIFT, THEN:",
         "SEQ COPY  EDIT PASTE  REC CLEAR",
         "SAVE UNDO  PLAY DEMO  FX I/O TEST",
-        "KEY 1-8 MUTE (MIXER: SOLO)",
+        "KEY 1-8 MUTE (STACK: SOLO)",
     };
     uint32_t i;
     fb_clear(P_BLACK);
-    header("HELP");
+    ui_header("HELP");
     for (i = 0; i < sizeof L / sizeof L[0]; i++)
         fb_text(4, 18 + (int32_t)i * 12, L[i], i >= 12 ? P_LIME : P_LGRAY, 1);
     footer("SHIFT+GLO: CLOSE");
@@ -460,7 +481,7 @@ void ui_draw(uint32_t now)
     case VIEW_SPLASH: ui_draw_splash(now - ui.t0); break;
     case VIEW_EDIT: draw_edit(); break;
     case VIEW_GLOBAL: draw_global(); break;
-    case VIEW_MIX: draw_mix(); break;
+    case VIEW_STACK: draw_stack(now); break;
     case VIEW_HELP: draw_help(); break;
     case VIEW_IO: draw_io(); break;
     default: draw_seq(); break;

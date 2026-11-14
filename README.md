@@ -1,6 +1,6 @@
 # STACK
 
-![STACK boot screen](docs/img/splash.png)
+![STACK boot screen](docs/img/splash.png) ![The sound system](docs/img/stack.png)
 
 **ES** · Firmware open-source para el **M-VAVE FM-1** que lo convierte en una groovebox de 8 pistas para rave, dub y
 acid. Cada pista que añades trae una caja de altavoz al *sound system* en pantalla: subs abajo, medios en medio, tops
@@ -11,10 +11,10 @@ Every track you add brings a speaker cabinet to the on-screen sound system: subs
 tops on top.
 
 > ⚠️ **Beta / pre-alfa — instálalo bajo tu responsabilidad. Install at your own risk.**
-> Estado: **Fase 2**: secuenciador de 8 pistas, motor de percusión analógica modelada y bajo acid 303. El sound
-> system animado llega en la Fase 3 (por ahora HOME abre un mezclador).
-> Status: **Phase 2**: 8-track sequencer, modelled analogue drums and a 303-style acid bass. The animated sound
-> system arrives in Phase 3 (for now HOME opens a mixer).
+> Estado: **Fase 3**: secuenciador de 8 pistas, percusión analógica modelada, bajo acid 303 y el sound system animado
+> que se construye con el patrón.
+> Status: **Phase 3**: 8-track sequencer, modelled analogue drums, a 303-style acid bass and the animated sound system
+> that builds itself from the pattern.
 
 Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWARE.md)
 
@@ -24,17 +24,18 @@ Plan y hardware: [docs/PLAN.md](docs/PLAN.md) · [docs/HARDWARE.md](docs/HARDWAR
 make web && make serve      # http://localhost:8017/  (Emscripten 6.0.10, Python ≥ 3.10 + Pillow)
 ```
 
-In the emulator: click **Switch on**, press any key to leave the flyer, then **PLAY**: the demo pattern runs.
+In the emulator: click **Switch on**, press any key to leave the flyer: the demo's speakers drop onto the stage.
+**PLAY** runs it; the cones push with every hit.
 Knobs: drag or mouse wheel. Shift-click or right-click holds a key or button down (to hold a step and turn knobs).
 
 | Control | Does |
 |---|---|
 | White keys | the 16 steps of the page: tap on/off; **hold + knobs** edits the step (NOTE VEL GATE PROB; ALGO → RATCHET NUDGE COND ACC/SLD) |
-| Black keys 1–8 | pick the track (in the mixer: mute; HOME+key: solo) |
+| Black keys 1–8 | sequencer: pick the track · sound system: mute (HOME+key: solo) |
 | Black keys 9 / 10 / 11 | PAGE / FILL (held) / KEYS mode (play the track chromatically; SEQ returns) |
 | PLAY · REC | play-stop · arm live recording (KEYS mode, quantised) |
-| SEQ · EDIT · ENV · GLO | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing |
-| HOME tap · HOME held | mixer · SHIFT: +SEQ copy, +EDIT paste, +REC clear, +SAVE undo, +PLAY demo, +GLO help, +FX I/O test |
+| SEQ · EDIT · ENV · GLO | sequencer · sound pages (EDIT again or ALGO: next page) · decay page · tempo, swing (ALGO: scanlines) |
+| HOME tap · HOME held | the sound system · SHIFT: +SEQ copy, +EDIT paste, +REC clear, +SAVE undo, +PLAY demo, +GLO help, +FX I/O test |
 | SELECT · PRESET · K1–K4 | track · sound preset · the page's parameters |
 | OCT− / OCT+ | page (KEYS mode: octave) |
 

@@ -11,6 +11,9 @@
 #include "../../app/core/core.h"
 #include "../../app/core/engine.h"
 #include "../../app/ui/ui.h"
+/* the sound system's internals, for the acceptance checks */
+int stack_box(uint32_t t, int32_t *x, int32_t *y, int *kind, int *exc, int *state);
+void stack_reset(void);
 
 /* ------------------------------------------------------------------ helpers --- */
 #define MAXTRIG 4096
@@ -396,8 +399,10 @@ static void test_ui(void)
     frame();
     snapshot("splash_t470");
     key_tap(UI_WHITE[3]);                      /* a key leaves the flyer, and does nothing else */
-    CHECK(ui_view() == VIEW_SEQ, "a key leaves the flyer for the sequencer");
+    CHECK(ui_view() == VIEW_STACK, "a key leaves the flyer for the sound system");
     CHECK(!(g_proj.pat.trk[0].step[3].flags & STEP_ON), "the key that left the flyer edited nothing");
+    btn_tap(UB_SEQ);
+    CHECK(ui_view() == VIEW_SEQ, "SEQ: the sequencer");
     snapshot("seq_demo_stopped");
 
     /* a step on, off */
@@ -457,12 +462,12 @@ static void test_ui(void)
     }
     btn_tap(UB_PLAY);                          /* stop: the snapshot is still */
     snapshot("edit_acid");
-    /* the mixer: a HOME tap; black key 3 mutes track 3 */
+    /* the sound system: a HOME tap; black key 3 mutes track 3 */
     btn_tap(UB_HOME);
-    CHECK(ui_view() == VIEW_MIX, "HOME tap: mixer");
+    CHECK(ui_view() == VIEW_STACK, "HOME tap: the sound system");
     key_tap(UI_BLACK[2]);
-    CHECK(core_mute == 1u << 2, "black key 3 mutes track 3 in the mixer");
-    snapshot("mix_mute3");
+    CHECK(core_mute == 1u << 2, "black key 3 mutes track 3 on the sound system");
+    core_mute = 0;
     btn_tap(UB_GLO);
     snapshot("global");
     in.buttons = 1u << UB_HOME;
@@ -483,6 +488,184 @@ static void test_ui(void)
     frame();
     btn_tap(UB_SEQ);
     CHECK(!ui_keys_mode(), "SEQ: back to steps");
+}
+
+/* ------------------------------------------------- Phase 3: the sound system --- */
+static void frames(int n) { while (n-- > 0) frame(); }
+
+static int box_at(uint32_t t, int32_t *x, int32_t *y, int *kind, int *exc, int *state)
+{
+    return stack_box(t, x, y, kind, exc, state);
+}
+
+static void test_stack(void)
+{
+    int32_t x, y;
+    int kind, exc, state, i, t;
+    memset(&in, 0, sizeof in);
+    in.master = 4096;
+    core_init();
+    core_clear_project();                      /* an empty pattern */
+    stack_reset();
+    ui_init();
+    frame();
+    key_tap(UI_WHITE[0]);                      /* leave the flyer */
+    frames(5);
+    CHECK(ui_view() == VIEW_STACK, "the flyer leads to the sound system");
+    for (t = 0, i = 0; t < NTRACKS; t++)
+        i += box_at((uint32_t)t, &x, &y, &kind, &exc, &state);
+    CHECK(i == 0, "an empty pattern: an empty stage");
+    snapshot("stack_empty");
+
+    /* acceptance: a kick step brings a sub */
+    key_tap(UI_WHITE[0]);                      /* track 1 (909) step 1 on */
+    CHECK(box_at(0, &x, &y, &kind, &exc, &state) && kind == CAT_SUB, "a kick: a SUB cabinet arrives");
+    CHECK(state == 1, "it falls (state %d)", state);
+    frames(12);                                /* ~140 ms into the fall */
+    snapshot("stack_kick_falling");
+    frames(50);
+    box_at(0, &x, &y, &kind, &exc, &state);
+    CHECK(state == 0 && x == 104 - 25 && y == 196 - 52, "landed centred on the floor: %d,%d state %d", x, y, state);
+    snapshot("stack_kick");
+
+    /* acceptance: a hat step brings a top */
+    in.enc[UE_SELECT] = 1;                     /* track 2 */
+    frame();
+    in.enc[UE_SELECT] = 1;                     /* track 3: the closed hat */
+    frame();
+    CHECK(ui_track() == 2, "SELECT picked track 3");
+    key_tap(UI_WHITE[2]);
+    frames(60);
+    CHECK(box_at(2, &x, &y, &kind, &exc, &state) && kind == CAT_TOP && y == 196 - 52 - 1 - 28,
+          "a hat: a TOP cabinet on the subs (y %d)", y);
+    snapshot("stack_kick_hat");
+
+    /* a clap (MID) slides the top up to make room */
+    in.enc[UE_SELECT] = -1;
+    frame();
+    key_tap(UI_WHITE[4]);
+    frame();
+    box_at(2, &x, &y, &kind, &exc, &state);
+    CHECK(state == 2, "the top moves (state %d)", state);
+    frames(60);                                /* (the fall with its bounce takes 520 ms) */
+    box_at(1, &x, &y, &kind, &exc, &state);
+    CHECK(kind == CAT_MID && y == 196 - 52 - 1 - 40, "the clap's MID between (y %d)", y);
+    box_at(2, &x, &y, &kind, &exc, &state);
+    CHECK(y == 196 - 52 - 1 - 40 - 1 - 28, "the top above it (y %d)", y);
+
+    /* acceptance: mute powers the cabinet off */
+    key_tap(UI_BLACK[0]);
+    CHECK(core_mute == 1u, "black key 1 mutes the kick");
+    frames(2);
+    box_at(0, &x, &y, &kind, &exc, &state);
+    CHECK(fb_get(x + 4, y + 26) == P_DGRAY, "the muted cabinet is grey (pixel %u)", fb_get(x + 4, y + 26));
+    snapshot("stack_kick_muted");
+    key_tap(UI_BLACK[0]);
+    CHECK(core_mute == 0, "and back on");
+
+    /* a track emptied: its cabinet lifts away, the others close up */
+    in.enc[UE_SELECT] = -1;                    /* track 1 */
+    frame();
+    in.buttons = 1u << UB_HOME;
+    frame();
+    btn_tap(UB_REC);                           /* SHIFT+REC: clear */
+    in.buttons = 0;
+    frame();
+    box_at(0, &x, &y, &kind, &exc, &state);
+    CHECK(state == 3, "the cleared kick's cabinet leaves (state %d)", state);
+    frames(40);
+    CHECK(!box_at(0, &x, &y, &kind, &exc, &state), "gone");
+    box_at(1, &x, &y, &kind, &exc, &state);
+    CHECK(y == 196 - 40, "the clap now stands on the floor (y %d)", y);
+
+    /* the demo, settled; then a solo; then the scanlines */
+    core_load_demo();
+    frames(80);
+    snapshot("stack_demo");
+    in.buttons = 1u << UB_HOME;
+    frame();
+    key_tap(UI_BLACK[6]);                      /* SHIFT + black 7 on the stack: solo the acid */
+    in.buttons = 0;
+    frame();
+    CHECK(core_solo == 1u << 6, "solo the acid");
+    frames(2);
+    snapshot("stack_solo_acid");
+    core_solo = 0;
+    btn_tap(UB_GLO);
+    in.enc[UE_ALGO] = 1;
+    frame();
+    in.enc[UE_K1] = 1;
+    frame();
+    btn_tap(UB_HOME);
+    frames(2);
+    snapshot("stack_scanlines");
+    in.enc[UE_K1] = 0;
+}
+
+/* acceptance: triggers visible at 140 BPM without lag. The UI runs a frame every 16 ms, the audio in between; every
+ * kick must push its cone on the very next frame. */
+static void test_stack_latency(void)
+{
+    uint32_t f = 0, hits = 0, late = 0, i;
+    const uint32_t per_frame = 705;            /* 16 ms */
+    double quarter = 44100.0 * 60 / 140, worst_ms = 0;
+    clock_t c0;
+    double draw_s = 0, spi_bytes = 0, spi_full = 0;
+    int nframes = 0;
+    memset(&in, 0, sizeof in);
+    in.master = 4096;
+    core_init();                               /* the demo */
+    g_proj.bpm10 = 1400;
+    stack_reset();
+    ui_init();
+    ui_frame(&in, 0);
+    in.keys = 1u << UI_WHITE[15];              /* leave the flyer */
+    ui_frame(&in, 16);
+    in.keys = 0;
+    for (i = 0; i < 60; i++)                   /* let the stack land */
+        ui_frame(&in, 32 + i * 16);
+    core_post(EV_PLAY, 0, 0, 0);
+    for (f = 0; f < 8u * 18900u; f += per_frame) {
+        uint32_t k, now = 1000 + f * 16 / per_frame;
+        int32_t x, y;
+        int kind, exc, state;
+        core_render(blk, 256, 4096);           /* the audio between two frames, its triggers left for the UI */
+        core_render(blk, 256, 4096);
+        core_render(blk, per_frame - 512, 4096);
+        c0 = clock();
+        ui_frame(&in, now);
+        draw_s += (double)(clock() - c0) / CLOCKS_PER_SEC;
+        nframes++;
+        {                                      /* what the flush would send: changed spans vs whole bands */
+            uint32_t b, m = fb_changed_bands();
+            for (b = 0; b < FB_NBANDS; b++) {
+                int32_t x0, w;
+                if (fb_band_span(b, &x0, &w)) {
+                    spi_bytes += (double)w * FB_BAND * 2;
+                    spi_full += FB_W * FB_BAND * 2;
+                }
+            }
+            fb_mark_sent(m);
+        }
+        /* did a kick land inside the audio just rendered? Then its cone is out now. */
+        for (k = 0; k < 8; k++) {
+            double s = k * quarter;
+            if (s >= f && s < f + per_frame) {
+                hits++;
+                stack_box(0, &x, &y, &kind, &exc, &state);
+                if (exc < 3)
+                    late++;
+                if ((f + per_frame - s) / 44.1 > worst_ms)
+                    worst_ms = (f + per_frame - s) / 44.1;
+            }
+        }
+    }
+    printf("stack at 140 BPM: %u kicks, %u late, worst trigger-to-frame %.1f ms; a UI frame takes %.0f us here\n",
+           hits, late, worst_ms, draw_s / nframes * 1e6);
+    printf("stack at 140 BPM: %.1f KB/s to the panel (whole bands would be %.1f KB/s); at 12 MHz SPI %.0f%% busy\n",
+           spi_bytes / 1024 / (nframes * 0.016), spi_full / 1024 / (nframes * 0.016),
+           spi_bytes * 8 / 12e6 / (nframes * 0.016) * 100);
+    CHECK(hits == 8 && late == 0, "every kick shows on the next frame: %u hits, %u late", hits, late);
 }
 
 static void test_cabinets(void)
@@ -520,6 +703,8 @@ int main(int argc, char **argv)
     test_demo();
     test_worst_case();
     test_ui();
+    test_stack();
+    test_stack_latency();
     test_cabinets();
     golden_save();
     printf("%d checks, %d failed\n", checks, fails);
