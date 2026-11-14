@@ -44,8 +44,8 @@ sim: host
 	./app/build/host/stack_host app/tests/io.txt build/sim-out
 
 web:
-	. $(EMSDK)/emsdk_env.sh >/dev/null 2>&1 && EMSDK_PYTHON=$(PY) PATH="$(dir $(PY)):$$PATH" \
-	    $(FRIBIDI) $(PY) base/tools/build.py app --web
+	EMSDK="$(EMSDK)" EM_CONFIG="$(EMSDK)/.emscripten" EMSDK_PYTHON="$(PY)" \
+	    PATH="$(EMSDK)/upstream/emscripten:$(dir $(PY)):$$PATH" $(FRIBIDI) $(PY) base/tools/build.py app --web
 
 serve:
 	cd app/build/emu && $(PY) -m http.server 8017

@@ -989,8 +989,6 @@ static void test_serialize(void)
         len = proj_encode_pattern(p, io);
         bank_clear(&g_bank[p]);
         CHECK(proj_decode_pattern(p, io, len) == 0, "pattern %u decodes", p);
-        CHECK(!memcmp(&g_bank[p], &keepb[p], sizeof(bank_t)) || 1, "");
-        keepb[p] = keepb[p];
         if (memcmp(g_bank[p].step, keepb[p].step, sizeof g_bank[p].step) ||
             memcmp(g_bank[p].len, keepb[p].len, sizeof g_bank[p].len))
             CHECK(0, "pattern %u steps the same after the round trip", p);
