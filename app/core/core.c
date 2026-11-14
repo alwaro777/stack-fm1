@@ -1,197 +1,511 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
- * STACK — F1 audio core: a 4-voice test voice (sine + soft square) proving the audio path end to end.
- * The real engines (drums, acid, FM...) replace it from Phase 2; the event ring and the fixed-point conventions stay.
+ * STACK — the core: the sequencer, one voice per track, the mixer.
  *
- * Fixed point used throughout core/:
- *   phase   uint32, a full cycle = 2^32 (wraps for free)
- *   sample  Q15 in int32 (±32767)
- *   gain    Q15 (32768 = 1.0); envelope Q24 in uint32 for slow, smooth ramps
- *   output  signed 24-bit (Q23) in int32, as fm1-base's app_render expects */
+ * Timing. A tick is 1/96 of a quarter note; its length in samples is kept in Q16, so the tempo is exact on average
+ * and every tick lands within one sample of where it should. The render runs in chunks that end on tick boundaries,
+ * so triggers are sample-accurate to the tick.
+ *
+ * Scheduling. Each track decides its next step half a step early (a look-ahead), which lets a step play early (a
+ * negative nudge) and lets swing push off-beats late: the decision makes up to four hits (ratchets) and a note-off,
+ * each at its own tick, kept in the track's small queue. Probability and conditions are decided then too.
+ *
+ * Swing. The odd steps of each track move late by (swing - 50) / 50 of a step: at 50 % they sit on the grid, at 75 %
+ * half a step late (the off-beat 16th at 3/4 of its 8th).
+ *
+ * Fixed point throughout (dsp.h), 32-bit products. */
 #include "core.h"
+#include "engine.h"
 
-/* ---------------------------------------------------------------- tables --- */
-/* 256-point sine, Q15, plus a guard point for interpolation. Generated once at init (integer only: a parabolic
- * approximation refined by one Bhaskara-style correction is enough for a test tone; Phase 4 swaps in a
- * precomputed table). */
-static int16_t sine_tab[257];
+project_t g_proj;
+volatile uint32_t core_mute, core_solo;
+volatile uint8_t core_fill, core_rec;
 
-static int32_t sine_q15_from_index(uint32_t i)    /* i: 0..255 over a full cycle */
-{
-    /* Bhaskara I approximation of sin(x) on [0, pi]: 16x(pi - x) / (5 pi^2 - 4x(pi - x)), in integers with
-     * x mapped to 0..128 for the half cycle. Max error ~0.0016: fine for a test tone. */
-    uint32_t h = i & 127u;                         /* position in the half cycle, 0..127 */
-    int64_t p = (int64_t)h * (int64_t)(128 - h);   /* x(pi - x), scaled */
-    int64_t num = 16 * p;
-    int64_t den = 5 * 128 * 128 - 4 * p;
-    int32_t v = (int32_t)((num * 32767) / den);
-    return i < 128u ? v : -v;
-}
+/* ------------------------------------------------------------- queues --- */
+static struct {
+    volatile uint32_t head, tail;
+    uint32_t ev[STK_EVQ_LEN];
+} evq;
 
-/* MIDI note -> phase increment per sample (2^32 / SR * f). One octave of increments, then shifts. */
-static uint32_t note_inc_tab[12];
+static struct {
+    volatile uint32_t head, tail;
+    trig_t ev[STK_TRIGQ_LEN];
+} trigq;
 
-static uint32_t note_inc(uint32_t note)
-{
-    int32_t oct = (int32_t)note / 12 - 5;          /* the table holds octave 4 (MIDI 60..71) */
-    uint32_t inc = note_inc_tab[note % 12u];
-    return oct >= 0 ? inc << oct : inc >> -oct;
-}
-
-/* ------------------------------------------------------------------ state --- */
-typedef struct {
-    uint8_t note, gate;
-    uint32_t phase, inc;
-    uint32_t env;                /* Q24 amplitude 0..1 */
-    int32_t vel_q15;
-} tvoice_t;
-
-static stk_evq_t evq;
-static tvoice_t tv[STK_TEST_VOICES];
-static uint32_t voice_clock;     /* allocation order, for deterministic stealing */
-static uint32_t voice_age[STK_TEST_VOICES];
-static int32_t gain_q15;         /* MASTER, smoothed per sample */
-static volatile uint32_t peak_q15;
-
-void core_init(void)
-{
-    uint32_t i;
-    /* frequencies of MIDI 60..71 (C4..B4) in milli-Hz, so the increments are exact integers to compute */
-    static const uint32_t MHZ[12] = {261626, 277183, 293665, 311127, 329628, 349228,
-                                     369994, 391995, 415305, 440000, 466164, 493883};
-    for (i = 0; i < 256u; i++)
-        sine_tab[i] = (int16_t)sine_q15_from_index(i);
-    sine_tab[256] = sine_tab[0];
-    for (i = 0; i < 12u; i++)    /* inc = f * 2^32 / SR, f in mHz */
-        note_inc_tab[i] = (uint32_t)(((uint64_t)MHZ[i] << 32) / ((uint64_t)STK_SR * 1000u));
-    for (i = 0; i < STK_TEST_VOICES; i++) {
-        tv[i].gate = 0;
-        tv[i].env = 0;
-        tv[i].phase = 0;
-        voice_age[i] = 0;
-    }
-    evq.head = evq.tail = 0;
-    voice_clock = 0;
-    gain_q15 = 0;
-    peak_q15 = 0;
-}
-
-int core_post(uint32_t type, uint32_t note, uint32_t vel)
+int core_post(uint32_t type, uint32_t track, uint32_t note, uint32_t vel)
 {
     uint32_t h = evq.head;
     if (h - evq.tail >= STK_EVQ_LEN)
         return 0;
-    evq.ev[h & (STK_EVQ_LEN - 1u)] = type << 24 | (note & 0x7Fu) << 16 | (vel & 0x7Fu) << 8;
+    evq.ev[h & (STK_EVQ_LEN - 1u)] = type << 24 | (track & 0xFFu) << 16 | (note & 0x7Fu) << 8 | (vel & 0x7Fu);
     __asm__ volatile("" ::: "memory");             /* the slot is written before head moves */
     evq.head = h + 1u;
     return 1;
 }
 
-/* deterministic voice choice: a free voice (lowest index); else the voice that started longest ago */
-static uint32_t voice_pick(void)
+int core_trig_pop(trig_t *t)
 {
-    uint32_t i, best = 0;
-    for (i = 0; i < STK_TEST_VOICES; i++)
-        if (!tv[i].gate && tv[i].env == 0)
-            return i;
-    for (i = 1; i < STK_TEST_VOICES; i++)
-        if (voice_age[i] < voice_age[best])
-            best = i;
-    return best;
+    uint32_t tl = trigq.tail;
+    if (tl == trigq.head)
+        return 0;
+    __asm__ volatile("" ::: "memory");
+    *t = trigq.ev[tl & (STK_TRIGQ_LEN - 1u)];
+    __asm__ volatile("" ::: "memory");
+    trigq.tail = tl + 1u;
+    return 1;
+}
+
+static void trig_push(uint32_t sample, uint32_t track, uint32_t note, uint32_t vel, uint32_t flags)
+{
+    uint32_t h = trigq.head;
+    trig_t *t;
+    if (h - trigq.tail >= STK_TRIGQ_LEN)
+        return;                                    /* nobody reading: the oldest stay, the newest drop */
+    t = &trigq.ev[h & (STK_TRIGQ_LEN - 1u)];
+    t->sample = sample;
+    t->track = (uint8_t)track;
+    t->note = (uint8_t)note;
+    t->vel = (uint8_t)vel;
+    t->flags = (uint8_t)flags;
+    __asm__ volatile("" ::: "memory");
+    trigq.head = h + 1u;
+}
+
+/* ----------------------------------------------------------- sequencer --- */
+enum { QE_POS, QE_OFF, QE_HIT };  /* at the same tick: the playhead moves, an old note ends, then the new one starts */
+typedef struct {
+    uint32_t tick;
+    uint8_t type, note, vel, flags;
+    int8_t pos;
+} qev_t;
+#define TQ_LEN 12u
+
+typedef struct {
+    uint32_t next_nominal;       /* the tick the next undecided step sits on (before swing and nudge) */
+    uint32_t count;              /* steps decided since PLAY */
+    int32_t pos;                 /* the last decided step */
+    int32_t pp_dir;              /* ping-pong: +1 or -1 */
+    int32_t play_pos;            /* the step sounding (for the UI) */
+    uint8_t tied;                /* the last note slides into the next one (acid) */
+    uint8_t held;                /* a note is held (acid) */
+    uint8_t nq;
+    qev_t q[TQ_LEN];             /* pending playhead moves / offs / hits, any order */
+} tplay_t;
+
+static const uint8_t SCALE_TICKS[NSCALES] = {12, 24, 48, 96, 16, 32};
+
+static tplay_t tp[NTRACKS];
+static voice_t voice[NTRACKS];
+static uint32_t rng;
+static uint32_t tick_now;        /* ticks since PLAY */
+static int32_t tick_rem;         /* Q16 samples until the next tick */
+static int32_t spt_q16;          /* Q16 samples per tick */
+static uint16_t spt_bpm;         /* the tempo spt_q16 was made for */
+static uint32_t sample_now;      /* samples since PLAY */
+static uint8_t playing;
+static int32_t gain_q15;
+static volatile uint32_t peak_q15;
+
+static uint32_t rnd(void)
+{
+    uint32_t x = rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    rng = x;
+    return x;
+}
+
+static void tempo_update(void)
+{
+    uint32_t b = g_proj.bpm10, q, r;
+    if (b == spt_bpm)
+        return;
+    b = (uint32_t)clampi((int32_t)b, BPM_MIN, BPM_MAX);
+    /* samples per tick = 44100 * 60 / (bpm * 96) = 275625 / bpm10, in Q16 without 64-bit arithmetic */
+    q = 275625u / b;
+    r = 275625u % b;
+    spt_q16 = (int32_t)((q << 16) + (r << 16) / b);
+    spt_bpm = g_proj.bpm10;
+}
+
+static void q_add(tplay_t *p, uint32_t tick, uint32_t type, uint32_t note, uint32_t vel, uint32_t flags, int pos)
+{
+    qev_t *e;
+    if (p->nq >= TQ_LEN)
+        return;
+    e = &p->q[p->nq++];
+    e->tick = tick;
+    e->type = (uint8_t)type;
+    e->note = (uint8_t)note;
+    e->vel = (uint8_t)vel;
+    e->flags = (uint8_t)flags;
+    e->pos = (int8_t)pos;
+}
+
+static int cond_ok(uint32_t cond, uint32_t loop)
+{
+    static const uint8_t AB[NCONDS][2] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0},
+                                          {1, 2}, {2, 2}, {1, 3}, {2, 3}, {3, 3}, {1, 4}, {2, 4}, {3, 4}, {4, 4}};
+    switch (cond) {
+    case COND_ALWAYS: return 1;
+    case COND_FILL: return core_fill != 0;
+    case COND_NOT_FILL: return core_fill == 0;
+    case COND_FIRST: return loop == 0;
+    case COND_NOT_FIRST: return loop != 0;
+    default:
+        if (cond >= NCONDS)
+            return 1;
+        return loop % AB[cond][1] == (uint32_t)(AB[cond][0] - 1u);
+    }
+}
+
+static int32_t next_pos(tplay_t *p, const track_t *t)
+{
+    int32_t len = t->len ? t->len : 1;
+    if (p->count == 0)                             /* the first step after PLAY */
+        return t->dir == DIR_REV ? len - 1 : t->dir == DIR_RANDOM ? (int32_t)(rnd() % (uint32_t)len) : 0;
+    switch (t->dir) {
+    case DIR_REV: return p->pos <= 0 || p->pos >= len ? len - 1 : p->pos - 1;
+    case DIR_PINGPONG:
+        if (len == 1)
+            return 0;
+        if (p->pos + p->pp_dir >= len || p->pos + p->pp_dir < 0)
+            p->pp_dir = -p->pp_dir;
+        return clampi(p->pos + p->pp_dir, 0, len - 1);
+    case DIR_RANDOM: return (int32_t)(rnd() % (uint32_t)len);
+    default: return p->pos + 1 >= len ? 0 : p->pos + 1;
+    }
+}
+
+/* decide the next step of track ti: its hits, its note-off, its playhead move */
+static void decide(uint32_t ti)
+{
+    tplay_t *p = &tp[ti];
+    const track_t *t = &g_proj.pat.trk[ti];
+    int32_t spt = SCALE_TICKS[t->scale < NSCALES ? t->scale : SCALE_16];
+    int32_t len = t->len ? t->len : 1, pos, off, first, k, nh;
+    uint32_t loop = p->count / (uint32_t)len, nominal = p->next_nominal;
+    const step_t *s;
+    pos = next_pos(p, t);
+    p->pos = pos;
+    p->count++;
+    p->next_nominal += (uint32_t)spt;
+    s = &t->step[pos];
+    q_add(p, nominal, QE_POS, 0, 0, 0, pos);
+    /* swing on odd steps, then the nudge (in 1/24 of a step, kept inside half a step) */
+    off = (p->count - 1u) & 1u ? ((int32_t)g_proj.swing - 50) * spt / 50 : 0;
+    off += clampi(s->micro, -11, 11) * spt / 24;
+    first = (int32_t)nominal + off;
+    if (first < (int32_t)tick_now)
+        first = (int32_t)tick_now;
+    if (!(s->flags & STEP_ON) || !cond_ok(s->cond, loop) || (s->prob < 100 && (int32_t)(rnd() % 100u) >= s->prob)) {
+        if (p->tied)                               /* a slide into a rest: the held note ends on the grid */
+            q_add(p, (uint32_t)first, QE_OFF, 0, 0, 0, pos);
+        p->tied = 0;
+        return;
+    }
+    nh = s->ratchet < 1 ? 1 : s->ratchet > 4 ? 4 : s->ratchet;
+    for (k = 0; k < nh; k++)
+        q_add(p, (uint32_t)(first + k * spt / nh), QE_HIT, s->note, s->vel ? s->vel : 1, s->flags, pos);
+    if (!(s->flags & STEP_SLIDE)) {               /* the gate: from the last hit, in 1/16 of a step */
+        int32_t g = s->gate ? s->gate : 1;
+        int32_t last = first + (nh - 1) * spt / nh;
+        int32_t glen = nh > 1 ? spt / nh * g / 16 : spt * g / 16;
+        q_add(p, (uint32_t)(last + (glen > 0 ? glen : 1)), QE_OFF, 0, 0, 0, pos);
+    }
+}
+
+static int track_audible(uint32_t ti)
+{
+    uint32_t solo = core_solo;
+    if (solo)
+        return (solo >> ti) & 1u;
+    return !((core_mute >> ti) & 1u);
+}
+
+/* the voices are a union over the engines: a track whose engine changed (a new preset) starts from a clean voice */
+static uint8_t voice_engine[NTRACKS];
+
+static void voice_sync(uint32_t ti)
+{
+    uint32_t e = g_proj.pat.trk[ti].engine, i;
+    if (voice_engine[ti] == e)
+        return;
+    for (i = 0; i < sizeof voice[ti]; i++)
+        ((uint8_t *)&voice[ti])[i] = 0;
+    voice_engine[ti] = (uint8_t)e;
+    tp[ti].held = tp[ti].tied = 0;
+}
+
+static void voice_hit(uint32_t ti, uint32_t note, uint32_t vel, uint32_t flags, int legato)
+{
+    track_t *t = &g_proj.pat.trk[ti];
+    uint32_t j;
+    voice_sync(ti);
+    if (t->engine == ENGINE_ACID) {
+        acid_trigger(&voice[ti].a, t, note, vel, flags, legato);
+    } else {
+        drum_trigger(&voice[ti].d, t, note, vel, flags);
+        if (t->model == DM_HAT_C)                 /* a closed hat chokes every open one */
+            for (j = 0; j < NTRACKS; j++)
+                if (g_proj.pat.trk[j].engine == ENGINE_DRUM && g_proj.pat.trk[j].model == DM_HAT_O &&
+                    voice[j].d.active)
+                    drum_choke(&voice[j].d);
+    }
+}
+
+static void voice_off(uint32_t ti)
+{
+    voice_sync(ti);
+    if (g_proj.pat.trk[ti].engine == ENGINE_ACID)
+        acid_release(&voice[ti].a);
+}
+
+static void fire(uint32_t ti, const qev_t *e)
+{
+    tplay_t *p = &tp[ti];
+    switch (e->type) {
+    case QE_POS:
+        p->play_pos = e->pos;
+        break;
+    case QE_HIT:
+        if (!track_audible(ti)) {
+            if (p->held)
+                voice_off(ti);
+            p->held = 0;
+            p->tied = (e->flags & STEP_SLIDE) != 0;
+            break;
+        }
+        voice_hit(ti, e->note, e->vel, e->flags, p->tied && p->held);
+        p->held = 1;
+        p->tied = (e->flags & STEP_SLIDE) != 0;
+        trig_push(sample_now, ti, e->note, e->vel, e->flags);
+        break;
+    case QE_OFF:
+        if (p->held)
+            voice_off(ti);
+        p->held = 0;
+        break;
+    }
+}
+
+static void seq_tick(void)
+{
+    uint32_t ti;
+    for (ti = 0; ti < NTRACKS; ti++) {
+        tplay_t *p = &tp[ti];
+        const track_t *t = &g_proj.pat.trk[ti];
+        uint32_t half = SCALE_TICKS[t->scale < NSCALES ? t->scale : SCALE_16] / 2u;
+        uint32_t i;
+        while (tick_now + half >= p->next_nominal)  /* look half a step ahead */
+            decide(ti);
+        for (;;) {                                 /* fire what is due, in tick order, then by type */
+            int best = -1;
+            for (i = 0; i < p->nq; i++)
+                if (p->q[i].tick <= tick_now &&
+                    (best < 0 || p->q[i].tick < p->q[best].tick ||
+                     (p->q[i].tick == p->q[best].tick && p->q[i].type < p->q[best].type)))
+                    best = (int)i;
+            if (best < 0)
+                break;
+            {
+                qev_t e = p->q[best];
+                p->q[best] = p->q[--p->nq];
+                fire(ti, &e);
+            }
+        }
+    }
+    tick_now++;
+}
+
+static void transport_play(void)
+{
+    uint32_t i;
+    for (i = 0; i < NTRACKS; i++) {
+        if (tp[i].held)
+            voice_off(i);
+        tp[i].next_nominal = 0;
+        tp[i].count = 0;
+        tp[i].pos = 0;
+        tp[i].pp_dir = 1;
+        tp[i].play_pos = -1;
+        tp[i].tied = tp[i].held = 0;
+        tp[i].nq = 0;
+    }
+    rng = 0x6C8E9CF5u ^ ((uint32_t)g_proj.seed * 0x9E3779B9u);
+    tick_now = 0;
+    tick_rem = 0;
+    sample_now = 0;
+    trigq.tail = trigq.head;                       /* (a fresh start: old triggers are history) */
+    playing = 1;
+}
+
+static void transport_stop(void)
+{
+    uint32_t i;
+    playing = 0;
+    for (i = 0; i < NTRACKS; i++) {
+        if (tp[i].held)
+            voice_off(i);
+        tp[i].held = tp[i].tied = 0;
+        tp[i].nq = 0;
+        tp[i].play_pos = -1;
+    }
+}
+
+/* live recording: the note lands on the step nearest in time, which is always the one decided last (decisions are
+ * made half a step early) */
+static void record(uint32_t ti, uint32_t note, uint32_t vel)
+{
+    step_t *s = &g_proj.pat.trk[ti].step[tp[ti].pos & (NSTEPS - 1)];
+    s->flags = STEP_ON;
+    s->note = (uint8_t)note;
+    s->vel = (uint8_t)vel;
+    s->gate = 12;
+    s->prob = 100;
+    s->ratchet = 1;
+    s->micro = 0;
+    s->cond = COND_ALWAYS;
 }
 
 static void events(void)
 {
     while (evq.tail != evq.head) {
         uint32_t e = evq.ev[evq.tail & (STK_EVQ_LEN - 1u)];
-        uint32_t type = e >> 24, note = (e >> 16) & 0x7Fu, vel = (e >> 8) & 0x7Fu, i;
+        uint32_t type = e >> 24, ti = (e >> 16) & 0xFFu, note = (e >> 8) & 0x7Fu, vel = e & 0x7Fu, i;
         __asm__ volatile("" ::: "memory");
         evq.tail++;
-        if (type == EV_NOTE_ON && vel) {
-            i = voice_pick();
-            tv[i].note = (uint8_t)note;
-            tv[i].gate = 1;
-            tv[i].inc = note_inc(note);
-            tv[i].vel_q15 = (int32_t)(vel * 258u);  /* 127 -> 32766 */
-            voice_age[i] = ++voice_clock;
-        } else if (type == EV_NOTE_OFF || (type == EV_NOTE_ON && !vel)) {
-            for (i = 0; i < STK_TEST_VOICES; i++)
-                if (tv[i].gate && tv[i].note == note)
-                    tv[i].gate = 0;
-        } else if (type == EV_ALL_OFF) {
-            for (i = 0; i < STK_TEST_VOICES; i++)
-                tv[i].gate = 0;
+        if (ti >= NTRACKS && (type == EV_NOTE_ON || type == EV_NOTE_OFF))
+            continue;
+        switch (type) {
+        case EV_NOTE_ON:
+            voice_hit(ti, note, vel ? vel : 100, 0, 0);
+            trig_push(sample_now, ti, note, vel, 0);
+            if (core_rec && playing)
+                record(ti, note, vel ? vel : 100);
+            break;
+        case EV_NOTE_OFF:
+            voice_off(ti);
+            break;
+        case EV_ALL_OFF:
+            for (i = 0; i < NTRACKS; i++)
+                voice_off(i);
+            break;
+        case EV_PLAY:
+            transport_play();
+            break;
+        case EV_STOP:
+            transport_stop();
+            break;
         }
     }
 }
 
-/* interpolated sine, Q15 */
-static inline int32_t sine_q15(uint32_t phase)
-{
-    uint32_t idx = phase >> 24, frac = (phase >> 8) & 0xFFFFu;
-    int32_t a = sine_tab[idx], b = sine_tab[idx + 1u];
-    return a + (int32_t)(((int64_t)(b - a) * frac) >> 16);
-}
+/* -------------------------------------------------------------- render --- */
+static int32_t trk_buf[STK_MAX_BLOCK];
+static int32_t mix_l[STK_MAX_BLOCK], mix_r[STK_MAX_BLOCK];
 
-#define ENV_ONE (1u << 24)
-#define ENV_ATTACK (ENV_ONE / 220u)                /* ~5 ms linear attack */
-#define ENV_RELEASE_SHIFT 10                        /* exponential release, ~23 ms time constant */
-#define ENV_FLOOR (1u << 12)                        /* -72 dB: below it the voice is free (no long inaudible tail) */
+static void render_chunk(int32_t *lr, uint32_t n, int32_t target)
+{
+    uint32_t ti, f;
+    uint32_t pk = peak_q15;
+    for (f = 0; f < n; f++)
+        mix_l[f] = mix_r[f] = 0;
+    for (ti = 0; ti < NTRACKS; ti++) {
+        const track_t *t = &g_proj.pat.trk[ti];
+        int32_t lvl = (int32_t)t->p[PR_LEVEL] * t->p[PR_LEVEL] * 2;          /* a squared curve, Q15 */
+        int32_t gl = (lvl * (TAB_PAN_L[t->p[PR_PAN] & 127] >> 1)) >> 14;     /* < 2^15 * 2^14 */
+        int32_t gr = (lvl * (TAB_PAN_R[t->p[PR_PAN] & 127] >> 1)) >> 14;
+        int act;
+        voice_sync(ti);
+        act = t->engine == ENGINE_ACID ? voice[ti].a.active : voice[ti].d.active;
+        if (!act)
+            continue;
+        for (f = 0; f < n; f++)
+            trk_buf[f] = 0;
+        if (t->engine == ENGINE_ACID)
+            acid_render(&voice[ti].a, t, trk_buf, n);
+        else
+            drum_render(&voice[ti].d, t, trk_buf, n);
+        for (f = 0; f < n; f++) {
+            int32_t x = clampi(trk_buf[f], -65535, 65535);
+            mix_l[f] += (x * (gl >> 1)) >> 14;     /* < 2^16 * 2^14 */
+            mix_r[f] += (x * (gr >> 1)) >> 14;
+        }
+    }
+    /* the master: a soft limiter (tanh, the sum at 3/4 into it), then MASTER, gliding so it never clicks */
+    for (f = 0; f < n; f++) {
+        int32_t l = dsp_tanh(clampi(mix_l[f] - (mix_l[f] >> 2), -131071, 131071));
+        int32_t r = dsp_tanh(clampi(mix_r[f] - (mix_r[f] >> 2), -131071, 131071));
+        uint32_t a;
+        gain_q15 += (target - gain_q15) >> 8;
+        l = (l * gain_q15) >> 15;
+        r = (r * gain_q15) >> 15;
+        a = (uint32_t)(l < 0 ? -l : l);
+        if (a > pk)
+            pk = a;
+        lr[2u * f] = l * 256;                      /* Q15 -> Q23 (a multiply: << on a negative is undefined in C) */
+        lr[2u * f + 1u] = r * 256;
+    }
+    peak_q15 = pk;
+}
 
 void core_render(int32_t *lr, uint32_t n, uint32_t master_q12)
 {
-    uint32_t f, i;
     int32_t target = (int32_t)(master_q12 > 4096u ? 4096u : master_q12) << 3;   /* Q12 -> Q15 */
-    uint32_t pk = peak_q15;
+    uint32_t done = 0;
     events();
-    for (f = 0; f < n; f++) {
-        int32_t mix = 0, out;
-        for (i = 0; i < STK_TEST_VOICES; i++) {
-            tvoice_t *v = &tv[i];
-            int32_t s;
-            if (v->gate) {
-                v->env = v->env + ENV_ATTACK > ENV_ONE ? ENV_ONE : v->env + ENV_ATTACK;
-            } else if (v->env) {
-                v->env -= v->env >> ENV_RELEASE_SHIFT;
-                if (v->env < ENV_FLOOR)
-                    v->env = 0;
-            } else {
-                continue;
+    if (n > STK_MAX_BLOCK)
+        n = STK_MAX_BLOCK;
+    while (done < n) {
+        uint32_t chunk = n - done;
+        if (playing) {
+            if (tick_rem <= 0) {
+                tempo_update();
+                seq_tick();
+                tick_rem += spt_q16;
             }
-            v->phase += v->inc;
-            /* sine plus a little of its octave: a rounder, more audible test tone on a small speaker */
-            s = sine_q15(v->phase) + (sine_q15(v->phase << 1) >> 2);
-            s = (int32_t)(((int64_t)s * (int32_t)(v->env >> 9)) >> 15);   /* env Q24 -> Q15 */
-            s = (s * (v->vel_q15 >> 3)) >> 12;                             /* velocity */
-            mix += s >> 1;                                                 /* -6 dB a voice; the clip below catches 4 */
+            {
+                uint32_t until = (uint32_t)(tick_rem + 65535) >> 16;   /* whole samples to the next tick */
+                if (until < chunk)
+                    chunk = until ? until : 1;
+            }
         }
-        gain_q15 += (target - gain_q15) >> 8;       /* ~6 ms glide: MASTER never clicks */
-        out = (int32_t)(((int64_t)mix * gain_q15) >> 15);
-        if (out > 32767)
-            out = 32767;
-        else if (out < -32767)
-            out = -32767;
-        if ((uint32_t)(out < 0 ? -out : out) > pk)
-            pk = (uint32_t)(out < 0 ? -out : out);
-        lr[2u * f] = out * 256;                     /* Q15 -> Q23 (a multiply: << on a negative is undefined in C) */
-        lr[2u * f + 1u] = out * 256;
+        render_chunk(&lr[2u * done], chunk, target);
+        if (playing) {
+            tick_rem -= (int32_t)chunk << 16;
+            sample_now += chunk;
+        }
+        done += chunk;
     }
-    peak_q15 = pk;
 }
 
 void core_panic(void)
 {
     uint32_t i;
-    for (i = 0; i < STK_TEST_VOICES; i++) {
-        tv[i].gate = 0;
-        tv[i].env = 0;
+    playing = 0;
+    for (i = 0; i < NTRACKS; i++) {
+        voice[i].d.active = 0;
+        voice[i].a.active = 0;
+        voice[i].a.amp = 0;
+        tp[i].held = tp[i].tied = 0;
+        tp[i].nq = 0;
     }
+}
+
+int core_playing(void) { return playing; }
+int core_play_pos(uint32_t ti) { return ti < NTRACKS && playing ? tp[ti].play_pos : -1; }
+uint32_t core_loops(uint32_t ti)
+{
+    const track_t *t = &g_proj.pat.trk[ti & 7u];
+    return tp[ti & 7u].count ? (tp[ti & 7u].count - 1u) / (t->len ? t->len : 1u) : 0;
 }
 
 uint32_t core_voices_active(void)
 {
     uint32_t i, c = 0;
-    for (i = 0; i < STK_TEST_VOICES; i++)
-        c += tv[i].env != 0;
+    for (i = 0; i < NTRACKS; i++)
+        c += g_proj.pat.trk[i].engine == ENGINE_ACID ? voice[i].a.active : voice[i].d.active;
     return c;
 }
 
@@ -200,4 +514,101 @@ uint32_t core_peak(void)
     uint32_t p = peak_q15;
     peak_q15 = 0;
     return p;
+}
+
+/* ------------------------------------------------------------ projects --- */
+/* 909, clap, closed hat, open hat, rim, tom, acid saw, sub bass (PRESETS[] indices) */
+static const uint8_t DEFAULT_KIT[NTRACKS] = {1, 4, 5, 6, 7, 8, 10, 12};
+
+static void step_default(step_t *s)
+{
+    s->flags = 0;
+    s->note = 60;
+    s->vel = 100;
+    s->gate = 12;
+    s->prob = 100;
+    s->ratchet = 1;
+    s->micro = 0;
+    s->cond = COND_ALWAYS;
+}
+
+void core_clear_project(void)
+{
+    uint32_t ti, i;
+    g_proj.bpm10 = 1380;
+    g_proj.swing = 50;
+    g_proj.seed = 1;
+    for (ti = 0; ti < NTRACKS; ti++) {
+        track_t *t = &g_proj.pat.trk[ti];
+        for (i = 0; i < NSTEPS; i++)
+            step_default(&t->step[i]);
+        t->len = 16;
+        t->scale = SCALE_16;
+        t->dir = DIR_FWD;
+        t->midi_ch = 0;
+        preset_apply(t, DEFAULT_KIT[ti]);
+    }
+}
+
+static void on(uint32_t ti, uint32_t s, uint32_t note, uint32_t vel, uint32_t flags)
+{
+    step_t *st = &g_proj.pat.trk[ti].step[s];
+    st->flags = (uint8_t)(STEP_ON | flags);
+    st->note = (uint8_t)note;
+    st->vel = (uint8_t)vel;
+}
+
+void core_load_demo(void)
+{
+    /* an A-minor acid line (0 = rest), with accents and slides */
+    static const uint8_t ACID[16] = {45, 45, 0, 57, 48, 45, 55, 57, 45, 0, 60, 52, 45, 57, 43, 47};
+    static const uint8_t ACID_F[16] = {0, STEP_ACCENT, 0, 0, STEP_SLIDE, STEP_SLIDE, 0, STEP_ACCENT,
+                                       0, 0, 0, STEP_ACCENT, STEP_SLIDE, 0, 0, STEP_ACCENT};
+    uint32_t i;
+    core_clear_project();
+    g_proj.swing = 54;
+    for (i = 0; i < 16; i += 4)
+        on(0, i, 60, 120, 0);                     /* kick: four to the floor */
+    on(0, 14, 60, 100, 0);                        /* and a roll into the bar's end, on FILL only */
+    g_proj.pat.trk[0].step[14].ratchet = 2;
+    g_proj.pat.trk[0].step[14].cond = COND_FILL;
+    on(1, 4, 60, 110, 0);                         /* clap on 2 and 4 */
+    on(1, 12, 60, 115, 0);
+    for (i = 0; i < 16; i++)                      /* closed hats on the 16ths but the off-beats */
+        if ((i & 3u) != 2u)
+            on(2, i, 60, (i & 1u) ? 64 : 96, 0);
+    for (i = 2; i < 16; i += 4)                   /* open hats on the off-beats, choked by the next closed one */
+        on(3, i, 60, 100, 0);
+    on(4, 7, 60, 90, 0);                          /* rim, the last one on probability */
+    on(4, 13, 60, 80, 0);
+    on(4, 15, 60, 70, 0);
+    g_proj.pat.trk[4].step[15].prob = 50;
+    for (i = 0; i < 16; i++)
+        if (ACID[i])
+            on(6, i, ACID[i], ACID_F[i] & STEP_ACCENT ? 120 : 96, ACID_F[i]);
+}
+
+void core_init(void)
+{
+    uint32_t i;
+    for (i = 0; i < NTRACKS; i++) {
+        voice[i].d.active = 0;
+        voice[i].a.active = 0;
+        voice[i].a.amp = 0;
+        tp[i].play_pos = -1;
+        tp[i].nq = 0;
+        tp[i].held = tp[i].tied = 0;
+    }
+    evq.head = evq.tail = 0;
+    trigq.head = trigq.tail = 0;
+    core_mute = core_solo = 0;
+    core_fill = core_rec = 0;
+    playing = 0;
+    gain_q15 = 0;
+    peak_q15 = 0;
+    spt_bpm = 0;
+    core_load_demo();
+    for (i = 0; i < NTRACKS; i++)
+        voice_engine[i] = g_proj.pat.trk[i].engine;
+    tempo_update();
 }
