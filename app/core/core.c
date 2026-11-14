@@ -123,7 +123,7 @@ static uint32_t ext_last, ext_target;
 static int32_t ext_spt;          /* Q16 samples per tick, measured from the clock */
 static uint8_t ext_seen;
 static uint8_t midi_held[NTRACKS];   /* the note sent last per track (0xFF none) */
-static uint32_t rng;
+static uint32_t seq_rng;
 static uint32_t tick_now;        /* ticks since PLAY */
 static int32_t tick_rem;         /* Q16 samples until the next tick */
 static int32_t spt_q16;          /* Q16 samples per tick */
@@ -135,11 +135,11 @@ static volatile uint32_t peak_q15;
 
 static uint32_t rnd(void)
 {
-    uint32_t x = rng;
+    uint32_t x = seq_rng;
     x ^= x << 13;
     x ^= x >> 17;
     x ^= x << 5;
-    rng = x;
+    seq_rng = x;
     return x;
 }
 
@@ -533,7 +533,7 @@ static void transport_play(void)
         tp[i].tied = tp[i].held = 0;
         tp[i].nq = 0;
     }
-    rng = 0x6C8E9CF5u ^ ((uint32_t)g_proj.seed * 0x9E3779B9u);
+    seq_rng = 0x6C8E9CF5u ^ ((uint32_t)g_proj.seed * 0x9E3779B9u);
     tick_now = 0;
     tick_rem = 0;
     sample_now = 0;
