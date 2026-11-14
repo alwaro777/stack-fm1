@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# STACK's words for a screen reader (fm1-reader): the text on the screen <TAB> what to say.
+# url: https://OWNER.github.io/stack/words/
+# (OWNER: set when the GitHub repository exists; the device sends this link to the screen reader)
+STACK	stack
+I/O TEST	input and output test
+PRESS ANY KEY	press any key
+XR	dropouts
+SAY	message

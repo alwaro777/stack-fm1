@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# STACK's everyday checks: unit tests and the host simulator on every push, and the browser emulator built and (from
+# main) published to GitHub Pages. The firmware package itself is built and attested by release.yml (fm1-build@v1).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Tools for fm1-base's generators (Pillow with raqm, which loads the system's FriBiDi)
+        run: |
+          sudo apt-get install -y -qq libfribidi0
+          python -m pip install -q Pillow
+          python -c "from PIL import features; assert features.check('raqm'), 'Pillow without raqm'"
+      - name: Unit tests and host simulator
+        run: make test PY=python
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-output
+          path: |
+            build/test-out/
+            build/sim-out/
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Tools (Pillow with raqm; Emscripten 6.0.10, as fm1-base's own CI pins it)
+        run: |
+          sudo apt-get install -y -qq libfribidi0
+          python -m pip install -q Pillow
+          git clone -q https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          git -C "$RUNNER_TEMP/emsdk" checkout -q a2b92777574c2feda07994cd4f1079a3dfc151f8
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.10
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.10
+      - name: Build the browser emulator
+        run: make web PY=python EMSDK="$RUNNER_TEMP/emsdk"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/build/emu
+
+  pages:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test, web]
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

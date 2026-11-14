@@ -1,0 +1,36 @@
+# STACK F1 in fm1-base's host simulator (make sim): the flyer, the I/O view, the test tone, the controls.
+# view: 0 = flyer, 1 = I/O test
+wait 600
+shot boot.png
+expect view 0
+# any key leaves the flyer, without playing
+tapkey 7
+wait 50
+expect view 1
+expect voices 0
+# a key plays the test tone
+key 7 down
+wait 50
+expect voices 1
+wav tone.wav
+wait 300
+wavstop
+shot io_key.png
+key 7 up
+wait 400
+expect voices 0
+# octave, encoders, MASTER
+tap OCT+
+wait 30
+expect octave 1
+turn K2 3
+master 2048
+wait 300
+press PLAY
+wait 30
+shot io_controls.png
+release PLAY
+# HOME: back to the flyer
+tap HOME
+wait 50
+expect view 0

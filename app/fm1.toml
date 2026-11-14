@@ -1,0 +1,14 @@
+# STACK — build settings for fm1-base's tools/build.py (base/tools/build.py app ...)
+name = "STACK"                 # the build's file names: app/build/stack.fwsc, stack.bin
+id_prefix = "FM-1_58"          # package identity, unused on thefirmwarehub.com catalog (2026-11-14): dev FM-1_5800, releases FM-1_58XXYYZZ
+usb_manufacturer = "STACK"
+usb_product = "STACK FM-1"
+# Bluetooth stays off until Phase 5 (its RAM is better spent on audio buffers first: docs/PLAN.md R7)
+ble = false
+# the site and firmware.json for the Firmware Hub (docs/FIRMWARE-JSON.md in fm1-base)
+tagline = "a rave groovebox whose sound system grows as you build the track"
+licence = "GPL-3.0-or-later"
+credits = "Built on fm1-base and felucca-bsp (MPL-2.0)."
+description = "STACK turns the FM-1 into an 8-track groovebox for rave, dub and acid. Every track you add brings a speaker cabinet to the stack on screen: subs at the bottom, mids in the middle, tops on top. Beta: install at your own risk."
+tags = ["groovebox", "drum-machine", "sequencer"]
+screenshot = "docs/img/splash.png"
