@@ -3,9 +3,13 @@
  * Part of fm1-base's unity build, after the platform (gfx.c, lcd.c are in scope). core/ and ui/ never include plat.h:
  * they build alone for the unit tests (tests/unit). */
 #include "core/core.c"
+#include "core/drums.c"
+#include "core/acid.c"
+#include "core/presets.c"
 #include "ui/fb.c"
 #include "ui/cabinet.c"
 #include "ui/ui.c"
+#include "ui/ui_draw.c"
 
 /* the plat.h order is the UI's order: the input is copied bit for bit */
 _Static_assert(B_FX == UB_FX && B_HOME == UB_HOME && B_PLAY == UB_PLAY && B_OCTDN == UB_OCTDN && NB == UI_NBUTTONS,
@@ -140,7 +144,13 @@ int app_expect(const char *what, int *got)
     else if (!strcmp(what, "voices"))
         *got = (int)core_voices_active();
     else if (!strcmp(what, "octave"))
-        *got = stk_ui.octave;
+        *got = ui.octave;
+    else if (!strcmp(what, "track"))
+        *got = ui.track;
+    else if (!strcmp(what, "playing"))
+        *got = core_playing();
+    else if (!strcmp(what, "pos"))
+        *got = core_play_pos((uint32_t)ui.track);
     else
         return 0;
     return 1;

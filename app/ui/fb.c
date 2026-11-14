@@ -66,12 +66,20 @@ static int fb_clip(int32_t *x, int32_t *y, int32_t *w, int32_t *h)
 
 void fb_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint8_t c)
 {
-    int32_t i, j;
+    int32_t j;
+    uint8_t b = (uint8_t)((c & 15u) << 4 | (c & 15u));
     if (!fb_clip(&x, &y, &w, &h))
         return;
-    for (j = y; j < y + h; j++)
-        for (i = x; i < x + w; i++)
-            fb_put(i, j, c);
+    for (j = y; j < y + h; j++) {         /* an odd first pixel, whole bytes, an odd last pixel */
+        int32_t x0 = x, x1 = x + w;
+        uint8_t *row = &fb_px[j * FB_STRIDE];
+        if (x0 & 1)
+            fb_put(x0++, j, c);
+        if (x1 & 1)
+            fb_put(--x1, j, c);
+        for (; x0 < x1; x0 += 2)
+            row[x0 >> 1] = b;
+    }
 }
 
 void fb_hline(int32_t x, int32_t y, int32_t w, uint8_t c) { fb_rect(x, y, w, 1, c); }
